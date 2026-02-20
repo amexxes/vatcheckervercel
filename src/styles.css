@@ -325,3 +325,49 @@ tbody tr:hover td{ background: rgba(11,46,95,.02); }
 }
 .badgeTag.whitelist { background: rgba(26,167,91,.08); border-color: rgba(26,167,91,.22); color:#0b5a2f; }
 .badgeTag.blacklist { background: rgba(217,45,32,.08); border-color: rgba(217,45,32,.22); color:#7a1b14; }
+/* Nicer export buttons (override btn-secondary) */
+.btn.btn-secondary.btn-export {
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  border-radius: 12px;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.12);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+
+.btn.btn-secondary.btn-export:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.16);
+  filter: brightness(1.03);
+}
+
+.btn.btn-secondary.btn-export:active:not(:disabled) {
+  transform: translateY(0px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.14);
+  filter: brightness(0.98);
+}
+
+.btn.btn-secondary.btn-export:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(43, 179, 230, 0.35), 0 10px 22px rgba(0, 0, 0, 0.12);
+}
+
+/* Excel (green) */
+.btn.btn-secondary.btn-export.btn-excel {
+  background: linear-gradient(90deg, #107c41, #21a366);
+}
+
+/* PPTX (orange/red) */
+.btn.btn-secondary.btn-export.btn-pptx {
+  background: linear-gradient(90deg, #d24726, #ff6a3d);
+}
+
+/* Disabled still looks disabled */
+.btn.btn-secondary.btn-export:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
