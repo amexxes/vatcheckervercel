@@ -284,7 +284,7 @@ if (fr_job_id) {
 
   await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-    for (const q of queued) {
+  for (const q of queued) {
     await kv.hset(resKey, { [q.key]: JSON.stringify(q.row) });
 
     // NIEUW: task in queue zetten
@@ -293,15 +293,16 @@ if (fr_job_id) {
       key: q.key,
       p: {
         input: q.row.input,
-        countryCode: q.row.country_code,
-        vatNumber: q.row.vat_part,
-        vat_number: q.row.vat_number,
+        countryCode: q.row.country_code, // bv "FR"
+        vatNumber: q.row.vat_part,       // zonder prefix
+        vat_number: q.row.vat_number
       },
       attempt: 0,
       nextRunAt: Date.now(),
-      case_ref,
+      case_ref
     }));
   }
+
 
   await kv.expire(resKey, JOB_TTL_SEC);
 }
