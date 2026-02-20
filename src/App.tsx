@@ -199,7 +199,16 @@ function featureToVatCc(feature: any): string {
 }
 
   const countryCounts = useMemo(() => computeCountryCountsFromInput(vatInput), [vatInput]);
+const inputEntries = useMemo(() => {
+  const e = (Object.entries(countryCounts) as Array<[string, number]>)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]);
+  return e;
+}, [countryCounts]);
 
+const maxInputCount = useMemo(() => {
+  return inputEntries.length ? Math.max(...inputEntries.map(([, n]) => n)) : 0;
+}, [inputEntries]);
 const filteredRows = useMemo(() => {
   const q = filter.trim().toLowerCase();
   const base = !q
@@ -713,6 +722,41 @@ onEachFeature: (feature: any, lyr: any) => {
             <div className="callout" style={{ marginTop: 14 }}>
               <b>Tip</b>: Use the filter to search within results. Click a column header to sort. Click a row to expand details.
             </div>
+            {inputEntries.length > 0 && (
+  <div
+    style={{
+      marginTop: 10,
+      padding: 10,
+      border: "1px solid rgba(0,0,0,0.06)",
+      borderRadius: 12,
+      background: "rgba(0,0,0,0.02)",
+    }}
+  >
+    <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+      Input per land
+    </div>
+
+    <div style={{ maxHeight: 140, overflow: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+      {inputEntries.map(([cc, n]) => (
+        <div key={cc} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="mono" style={{ width: 34 }}>{cc}</div>
+
+          <div style={{ flex: 1, height: 8, background: "rgba(0,0,0,0.08)", borderRadius: 999, overflow: "hidden" }}>
+            <div
+              style={{
+                width: maxInputCount ? `${(n / maxInputCount) * 100}%` : "0%",
+                height: "100%",
+                background: "#1f6aa5",
+              }}
+            />
+          </div>
+
+          <div className="mono" style={{ width: 28, textAlign: "right" }}>{n}</div>
+        </div>
+      ))}
+    </div>
+  </div>
+)}
           </div>
 
           <div>
