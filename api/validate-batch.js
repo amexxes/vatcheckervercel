@@ -210,109 +210,119 @@ async function mapLimit(arr, limit, fn) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-  const vat_numbers = Array.isArray(req.body?.vat_numbers) ? req.body.vat_numbers : [];
-  const case_ref = (req.body?.case_ref || "").toString().slice(0, 80);
-
-  const parsed = vat_numbers.map(parseVat).filter(Boolean);
-
-  // dedupe
-  const seen = new Set();
-  const unique = [];
-  let duplicates_ignored = 0;
-
-  for (const p of parsed) {
-    const key = `${p.countryCode}:${p.vatNumber}`;
-    if (seen.has(key)) {
-      duplicates_ignored++;
-      continue;
+  try {
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
     }
-    seen.add(key);
-    unique.push(p);
+
+    // Vercel: req.body kan string zijn
+    const body =
+      typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+
+    const vat_numbers = Array.isArray(body?.vat_numbers) ? body.vat_numbers : [];
+    const case_ref = (body?.case_ref || "").toString().slice(0, 80);
+
+    const parsed = vat_numbers.map(parseVat).filter(Boolean);
+
+    // dedupe
+    const seen = new Set();
+    const unique = [];
+    let duplicates_ignored = 0;
+
+    for (const p of parsed) {
+      const key = `${p.countryCode}:${p.vatNumber}`;
+      if (seen.has(key)) {
+        duplicates_ignored++;
+        continue;
+      }
+      seen.add(key);
+      unique.push(p);
+    }
+
+    let fr_job_id = null;
+    let jobTotal = 0;
+
+    const realtime = [];
+    const queued = [];
+
+    const checked = await mapLimit(unique, 6, async (p) => {
+      if (p.countryCode === "FR") {
+        if (!fr_job_id) fr_job_id = randomUUID();
+        jobTotal++;
+        return { kind: "queued", row: rowFromQueued(p, case_ref), key: `${p.countryCode}:${p.vatNumber}` };
+      }
+
+      const r = await viesCheck(p);
+      if (r.ok) return { kind: "realtime", row: rowFromOk(p, r.data, case_ref) };
+
+      const code = r.errorCode || `HTTP_${r.status || 0}`;
+      const details = r.message || JSON.stringify(r.data);
+
+      if (isRetryable(code, r.status)) {
+        if (!fr_job_id) fr_job_id = randomUUID();
+        jobTotal++;
+        return { kind: "queued", row: rowFromQueued(p, case_ref), key: `${p.countryCode}:${p.vatNumber}` };
+      }
+
+      return { kind: "realtime", row: rowFromError(p, code, details, case_ref) };
+    });
+
+    for (const x of checked) {
+      if (x.kind === "queued") queued.push(x);
+      else realtime.push(x);
+    }
+
+    // schrijf job + queued rows naar KV
+    if (fr_job_id) {
+      const metaKey = `job:${fr_job_id}:meta`;
+      const resKey = `job:${fr_job_id}:results`;
+
+      const meta = {
+        job_id: fr_job_id,
+        status: "queued",
+        total: jobTotal,
+        done: 0,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+
+      await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
+
+      for (const q of queued) {
+        await kv.hset(resKey, { [q.key]: JSON.stringify(q.row) });
+
+        await kv.lpush("queue:vies", JSON.stringify({
+          jobId: fr_job_id,
+          key: q.key,
+          p: {
+            input: q.row.input,
+            countryCode: q.row.country_code,
+            vatNumber: q.row.vat_part,
+            vat_number: q.row.vat_number,
+          },
+          attempt: 0,
+          nextRunAt: Date.now(),
+          case_ref,
+        }));
+      }
+
+      await kv.expire(resKey, JOB_TTL_SEC);
+    }
+
+    const results = [...realtime.map((x) => x.row), ...queued.map((x) => x.row)];
+
+    return res.status(200).json({
+      duplicates_ignored,
+      vies_status: [],
+      results,
+      fr_job_id,
+      count: results.length,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      error: "validate-batch failed",
+      message: String(e?.message || e),
+      stack: String(e?.stack || ""),
+    });
   }
-
- let fr_job_id = null;
-let jobTotal = 0;
-
-const realtime = [];
-const queued = [];
-
-// kleine concurrency voor realtime non-FR (zelfde als eerst)
-const checked = await mapLimit(unique, 6, async (p) => {
-  // FR altijd naar job/queue
-  if (p.countryCode === "FR") {
-    if (!fr_job_id) fr_job_id = randomUUID();
-    jobTotal++;
-    return { kind: "queued", row: rowFromQueued(p, case_ref), key: `${p.countryCode}:${p.vatNumber}` };
-  }
-
-  const r = await viesCheck(p);
-  if (r.ok) return { kind: "realtime", row: rowFromOk(p, r.data, case_ref) };
-
-  const code = r.errorCode || `HTTP_${r.status || 0}`;
-  const details = r.message || JSON.stringify(r.data);
-
-  // retryable -> ook naar job/queue (zoals FR)
-  if (isRetryable(code, r.status)) {
-    if (!fr_job_id) fr_job_id = randomUUID();
-    jobTotal++;
-    return { kind: "queued", row: rowFromQueued(p, case_ref), key: `${p.countryCode}:${p.vatNumber}` };
-  }
-
-  return { kind: "realtime", row: rowFromError(p, code, details, case_ref) };
-});
-
-for (const x of checked) {
-  if (x.kind === "queued") queued.push(x);
-  else realtime.push(x);
 }
-
-// schrijf job + queued rows naar KV
-if (fr_job_id) {
-  const metaKey = `job:${fr_job_id}:meta`;
-  const resKey = `job:${fr_job_id}:results`;
-
-  const meta = {
-    job_id: fr_job_id,
-    status: "queued",
-    total: jobTotal,
-    done: 0,
-    created_at: Date.now(),
-    updated_at: Date.now(),
-  };
-
-  await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
-
-  for (const q of queued) {
-    await kv.hset(resKey, { [q.key]: JSON.stringify(q.row) });
-
-    // NIEUW: task in queue zetten
-    await kv.lpush("queue:vies", JSON.stringify({
-      jobId: fr_job_id,
-      key: q.key,
-      p: {
-        input: q.row.input,
-        countryCode: q.row.country_code, // bv "FR"
-        vatNumber: q.row.vat_part,       // zonder prefix
-        vat_number: q.row.vat_number
-      },
-      attempt: 0,
-      nextRunAt: Date.now(),
-      case_ref
-    }));
-  }
-
-
-  await kv.expire(resKey, JOB_TTL_SEC);
-}
-
-const results = [...realtime.map((x) => x.row), ...queued.map((x) => x.row)];
-
-return res.status(200).json({
-  duplicates_ignored,
-  vies_status: [],
-  results,
-  fr_job_id,
-  count: results.length,
-});
