@@ -1,3 +1,7 @@
+import { kv } from "@vercel/kv";
+import { randomUUID } from "crypto";
+
+
 // api/validate-batch.js
 const VIES_BASE = "https://ec.europa.eu/taxation_customs/vies/rest-api";
 
@@ -5,6 +9,41 @@ const REQUESTER_MS = (process.env.REQUESTER_MS || "").toUpperCase();
 const REQUESTER_VAT = process.env.REQUESTER_VAT || "";
 
 const VIES_TIMEOUT_MS = Number(process.env.VIES_TIMEOUT_MS || 20000);
+const JOB_TTL_SEC = 6 * 60 * 60; // 6 uur
+const RETRYABLE_CODES = new Set([
+  "SERVICE_UNAVAILABLE",
+  "MS_UNAVAILABLE",
+  "TIMEOUT",
+  "GLOBAL_MAX_CONCURRENT_REQ",
+  "GLOBAL_MAX_CONCURRENT_REQ_TIME",
+  "MS_MAX_CONCURRENT_REQ",
+  "MS_MAX_CONCURRENT_REQ_TIME",
+  "NETWORK_ERROR",
+  "HTTP_429",
+  "HTTP_502",
+  "HTTP_503",
+  "HTTP_504",
+]);
+
+function isRetryable(code, httpStatus) {
+  if (RETRYABLE_CODES.has(String(code || "").trim())) return true;
+  if ([429, 502, 503, 504].includes(Number(httpStatus || 0))) return true;
+  if (Number(httpStatus || 0) === 0) return true;
+  return false;
+}
+
+function rowFromQueued(p, case_ref) {
+  return {
+    ...rowBase(p, case_ref),
+    state: "queued",
+    valid: null,
+    name: "",
+    address: "",
+    error_code: "",
+    error: "",
+    details: "",
+  };
+}
 
 function normalizeVatLine(s) {
   return String(s || "")
@@ -193,20 +232,70 @@ export default async function handler(req, res) {
     unique.push(p);
   }
 
-  const results = await mapLimit(unique, 6, async (p) => {
-    const r = await viesCheck(p);
-    if (r.ok) return rowFromOk(p, r.data, case_ref);
+ let fr_job_id = null;
+let jobTotal = 0;
 
-    const code = r.errorCode || `HTTP_${r.status || 0}`;
-    const details = r.message || JSON.stringify(r.data);
-    return rowFromError(p, code, details, case_ref);
-  });
+const realtime = [];
+const queued = [];
 
-  return res.status(200).json({
-    duplicates_ignored,
-    vies_status: [],
-    results,
-    fr_job_id: null,
-    count: results.length,
-  });
+// kleine concurrency voor realtime non-FR (zelfde als eerst)
+const checked = await mapLimit(unique, 6, async (p) => {
+  // FR altijd naar job/queue
+  if (p.countryCode === "FR") {
+    if (!fr_job_id) fr_job_id = randomUUID();
+    jobTotal++;
+    return { kind: "queued", row: rowFromQueued(p, case_ref), key: `${p.countryCode}:${p.vatNumber}` };
+  }
+
+  const r = await viesCheck(p);
+  if (r.ok) return { kind: "realtime", row: rowFromOk(p, r.data, case_ref) };
+
+  const code = r.errorCode || `HTTP_${r.status || 0}`;
+  const details = r.message || JSON.stringify(r.data);
+
+  // retryable -> ook naar job/queue (zoals FR)
+  if (isRetryable(code, r.status)) {
+    if (!fr_job_id) fr_job_id = randomUUID();
+    jobTotal++;
+    return { kind: "queued", row: rowFromQueued(p, case_ref), key: `${p.countryCode}:${p.vatNumber}` };
+  }
+
+  return { kind: "realtime", row: rowFromError(p, code, details, case_ref) };
+});
+
+for (const x of checked) {
+  if (x.kind === "queued") queued.push(x);
+  else realtime.push(x);
 }
+
+// schrijf job + queued rows naar KV
+if (fr_job_id) {
+  const metaKey = `job:${fr_job_id}:meta`;
+  const resKey = `job:${fr_job_id}:results`;
+
+  const meta = {
+    job_id: fr_job_id,
+    status: "queued",
+    total: jobTotal,
+    done: 0,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  };
+
+  await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
+
+  for (const q of queued) {
+    await kv.hset(resKey, { [q.key]: JSON.stringify(q.row) });
+  }
+  await kv.expire(resKey, JOB_TTL_SEC);
+}
+
+const results = [...realtime.map((x) => x.row), ...queued.map((x) => x.row)];
+
+return res.status(200).json({
+  duplicates_ignored,
+  vies_status: [],
+  results,
+  fr_job_id,
+  count: results.length,
+});
