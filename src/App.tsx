@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import ReactCountryFlag from "react-country-flag";
 import type { FrJobResponse, ValidateBatchResponse, VatRow } from "./types";
+import * as XLSX from "xlsx";
 
 type SortState = { colIndex: number | null; asc: boolean };
 type SavedRun = { id: string; ts: number; caseRef: string; input: string; results: VatRow[] };
@@ -480,45 +481,45 @@ export default function App() {
     setProgressText(`${stats.done}/${stats.total}`);
   }, [stats.done, stats.total]);
 
-  function exportCsv() {
-    const headers = [
-      "case_ref",
-      "input",
-      "vat_number",
-      "country_code",
-      "valid",
-      "state",
-      "name",
-      "address",
-      "error_code",
-      "error",
-      "attempt",
-      "next_retry_at",
-      "note",
-      "tag",
-      "checked_at",
-    ];
-    const lines = [
-      headers.join(","),
-      ...rows.map((r) =>
-        headers
-          .map((h) => {
-            const v = (r as any)[h];
-            const s = v === null || v === undefined ? "" : String(v);
-            return `"${s.replace(/"/g, '""')}"`;
-          })
-          .join(",")
-      ),
-    ].join("\n");
+ function exportExcel() {
+  const headers = [
+    "case_ref",
+    "input",
+    "vat_number",
+    "country_code",
+    "valid",
+    "state",
+    "name",
+    "address",
+    "error_code",
+    "error",
+    "attempt",
+    "next_retry_at",
+    "note",
+    "tag",
+    "checked_at",
+  ];
 
-    const blob = new Blob([lines], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `vat_results_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+  // Alles als tekst (voorkomt Excel auto-formatting issues)
+  const aoa: string[][] = [
+    headers,
+    ...rows.map((r) =>
+      headers.map((h) => {
+        const v = (r as any)[h];
+        return v === null || v === undefined ? "" : String(v);
+      })
+    ),
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Results");
+
+  const filename = `vat_results_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
 
   function saveRun() {
     const id = crypto.randomUUID();
@@ -741,9 +742,9 @@ export default function App() {
                 placeholder="Client / Case (optioneel)"
                 style={{ flex: 1, minWidth: 220 }}
               />
-              <button className="btn btn-secondary" onClick={exportCsv} disabled={!rows.length}>
-                Export CSV
-              </button>
+<button className="btn btn-secondary" onClick={exportExcel} disabled={!rows.length}>
+  Export Excel
+</button>
               <button className="btn btn-secondary" onClick={saveRun} disabled={!rows.length}>
                 Save run
               </button>
