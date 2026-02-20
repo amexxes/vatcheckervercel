@@ -14,7 +14,7 @@
     "leaflet": "^1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
-    "@vercel/kv": "^"
+    "@vercel/kv": "^0.2.4"
   },
   "devDependencies": {
     "@types/leaflet": "^1.9.12",
