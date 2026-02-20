@@ -200,11 +200,34 @@ function featureToVatCc(feature: any): string {
 
   const countryCounts = useMemo(() => computeCountryCountsFromInput(vatInput), [vatInput]);
 
-  const filteredRows = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) => JSON.stringify(r).toLowerCase().includes(q));
-  }, [rows, filter]);
+const filteredRows = useMemo(() => {
+  const q = filter.trim().toLowerCase();
+  const base = !q
+    ? rows
+    : rows.filter((r) => JSON.stringify(r).toLowerCase().includes(q));
+
+  // Als je handmatig sorteert via kolom-klik: laat die sortering leidend zijn
+  if (sortState.colIndex !== null) return base;
+
+  const prio = (state?: string) => {
+    const s = String(state || "").toLowerCase();
+    if (s === "queued" || s === "retry" || s === "processing") return 0; // pending bovenaan
+    return 1; // de rest eronder
+  };
+
+  // pending eerst; binnen pending: snelste retry eerst (als next_retry_at bestaat)
+  return [...base].sort((a, b) => {
+    const pa = prio(a.state);
+    const pb = prio(b.state);
+    if (pa !== pb) return pa - pb;
+
+    const na = typeof a.next_retry_at === "number" ? a.next_retry_at : Number.POSITIVE_INFINITY;
+    const nb = typeof b.next_retry_at === "number" ? b.next_retry_at : Number.POSITIVE_INFINITY;
+    if (na !== nb) return na - nb;
+
+    return 0;
+  });
+}, [rows, filter, sortState.colIndex]);
 
   const stats = useMemo(() => {
     let total = rows.length;
