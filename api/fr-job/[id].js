@@ -48,18 +48,28 @@ async function fetchJson(url, init, timeoutMs = VIES_TIMEOUT_MS) {
 
     const text = await resp.text();
     let data;
-    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
 
     return { ok: resp.ok, status: resp.status, data };
   } catch (e) {
-    return { ok: false, status: 0, data: { error: "NETWORK_ERROR", message: String(e?.message || e) } };
+    return {
+      ok: false,
+      status: 0,
+      data: { error: "NETWORK_ERROR", message: String(e?.message || e) },
+    };
   } finally {
     clearTimeout(t);
   }
 }
 
 function isCommonResponse(data) {
-  return data && typeof data === "object" && "actionSucceed" in data && "errorWrappers" in data;
+  return (
+    data && typeof data === "object" && "actionSucceed" in data && "errorWrappers" in data
+  );
 }
 function extractErrorCode(data) {
   const wrappers = data?.errorWrappers;
@@ -89,11 +99,25 @@ async function viesCheck(p, requester) {
   });
 
   if (isCommonResponse(r.data) && r.data.actionSucceed === false) {
-    return { ok: false, status: r.status, errorCode: extractErrorCode(r.data), message: extractErrorMessage(r.data), data: r.data };
+    return {
+      ok: false,
+      status: r.status,
+      errorCode: extractErrorCode(r.data),
+      message: extractErrorMessage(r.data),
+      data: r.data,
+    };
   }
+
   if (!r.ok) {
-    return { ok: false, status: r.status, errorCode: extractErrorCode(r.data) || `HTTP_${r.status || 0}`, message: extractErrorMessage(r.data), data: r.data };
+    return {
+      ok: false,
+      status: r.status,
+      errorCode: extractErrorCode(r.data) || `HTTP_${r.status || 0}`,
+      message: extractErrorMessage(r.data),
+      data: r.data,
+    };
   }
+
   return { ok: true, status: r.status, data: r.data };
 }
 
@@ -110,11 +134,14 @@ async function readAllResults(resKey) {
   const out = [];
   if (!obj) return out;
   for (const v of Object.values(obj)) {
-    try { out.push(JSON.parse(v)); } catch {}
+    try {
+      out.push(JSON.parse(v));
+    } catch {}
   }
   return out;
 }
 
+// NEW: worker leest uit queue:vies (list) en fallback uit queue:pending (hash)
 async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
   const start = Date.now();
   let processed = 0;
@@ -124,16 +151,36 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
     vat: process.env.REQUESTER_VAT || "",
   };
 
-  while (processed < maxTasks && (Date.now() - start) < maxMs) {
-    const raw = await kv.rpop("queue:vies");
-    if (!raw) break;
+  while (processed < maxTasks && Date.now() - start < maxMs) {
+    // 1) probeer list
+    let raw = await kv.rpop("queue:vies");
+
+    // 2) fallback: hash queue
+    if (!raw) {
+      const keys = await kv.hkeys("queue:pending");
+      if (!keys || keys.length === 0) break;
+
+      const k = keys[0];
+      raw = await kv.hget("queue:pending", k);
+      if (!raw) {
+        await kv.hdel("queue:pending", k);
+        continue;
+      }
+      await kv.hdel("queue:pending", k);
+    }
 
     let task;
-    try { task = JSON.parse(raw); } catch { continue; }
+    try {
+      task = JSON.parse(raw);
+    } catch {
+      continue;
+    }
 
     const now = Date.now();
     if (task.nextRunAt && task.nextRunAt > now) {
-      await kv.lpush("queue:vies", raw);
+      // nog niet aan de beurt -> terug in pending en stoppen
+      await kv.hset("queue:pending", { [task.key]: JSON.stringify(task) });
+      await kv.expire("queue:pending", JOB_TTL_SEC);
       break;
     }
 
@@ -143,11 +190,11 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
     const meta = await kv.get(metaKey);
     if (!meta) continue;
 
-    let cur;
+    let cur = null;
     try {
       const curRaw = await kv.hget(resKey, task.key);
       cur = curRaw ? JSON.parse(curRaw) : null;
-    } catch { cur = null; }
+    } catch {}
 
     if (cur) {
       cur.state = "processing";
@@ -209,12 +256,16 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
 
       task.attempt = attempt;
       task.nextRunAt = nextRetryAt;
-      await kv.lpush("queue:vies", JSON.stringify(task));
+
+      // retry terug in pending (stabiel)
+      await kv.hset("queue:pending", { [task.key]: JSON.stringify(task) });
+      await kv.expire("queue:pending", JOB_TTL_SEC);
 
       processed++;
       continue;
     }
 
+    // non-retryable => error + done++
     const row = {
       ...(cur || {}),
       state: "error",
@@ -224,6 +275,7 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
       details: String(details || "").slice(0, 1000),
       checked_at: Date.now(),
     };
+
     await kv.hset(resKey, { [task.key]: JSON.stringify(row) });
 
     meta.done = (meta.done || 0) + 1;
@@ -239,6 +291,7 @@ export default async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).json({ error: "Missing id" });
 
+  // verwerk een klein stukje queue per poll-call
   await workerSlice({ maxTasks: 4, maxMs: 2500 });
 
   const metaKey = `job:${id}:meta`;
@@ -246,6 +299,13 @@ export default async function handler(req, res) {
 
   const job = await kv.get(metaKey);
   if (!job) return res.status(404).json({ error: "Not found" });
+
+  // cosmetisch: zet queued -> running als er werk is
+  if (job.status === "queued" && (job.total || 0) > 0) {
+    job.status = "running";
+    job.updated_at = Date.now();
+    await kv.set(metaKey, job, { ex: JOB_TTL_SEC });
+  }
 
   const results = await readAllResults(resKey);
 
