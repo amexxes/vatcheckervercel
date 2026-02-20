@@ -286,27 +286,35 @@ export default async function handler(req, res) {
         updated_at: Date.now(),
       };
 
-      await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
+await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-      for (const q of queued) {
-        await kv.hset(resKey, { [q.key]: JSON.stringify(q.row) });
+for (const q of queued) {
+  await kv.hset(resKey, { [q.key]: JSON.stringify(q.row) });
 
-        await kv.lpush("queue:vies", JSON.stringify({
-          jobId: fr_job_id,
-          key: q.key,
-          p: {
-            input: q.row.input,
-            countryCode: q.row.country_code,
-            vatNumber: q.row.vat_part,
-            vat_number: q.row.vat_number,
-          },
-          attempt: 0,
-          nextRunAt: Date.now(),
-          case_ref,
-        }));
-      }
+  const task = {
+    jobId: fr_job_id,
+    key: q.key,
+    p: {
+      input: q.row.input,
+      countryCode: q.row.country_code,
+      vatNumber: q.row.vat_part,
+      vat_number: q.row.vat_number,
+    },
+    attempt: 0,
+    nextRunAt: Date.now(),
+    case_ref,
+  };
 
-      await kv.expire(resKey, JOB_TTL_SEC);
+  // primaire queue (list)
+  await kv.lpush("queue:vies", JSON.stringify(task));
+
+  // fallback queue (hash) - zodat we zeker weten dat de worker iets kan lezen
+  await kv.hset("queue:pending", { [q.key]: JSON.stringify(task) });
+  await kv.expire("queue:pending", JOB_TTL_SEC);
+}
+
+await kv.expire(resKey, JOB_TTL_SEC);
+
     }
 
     const results = [...realtime.map((x) => x.row), ...queued.map((x) => x.row)];
