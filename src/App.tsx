@@ -497,7 +497,6 @@ export default function App() {
     "next_retry_at",
     "note",
     "tag",
-    "checked_at",
   ];
 
   // Alles als tekst (voorkomt Excel auto-formatting issues)
