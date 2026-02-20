@@ -762,7 +762,9 @@ onEachFeature: (feature: any, lyr: any) => {
   </tr>
 </thead>
 <tbody>
-  {viesStatus.map((c) => (
+{[...viesStatus]
+  .sort((a, b) => (countryCounts[b.countryCode] || 0) - (countryCounts[a.countryCode] || 0))
+  .map((c) => (
     <tr key={c.countryCode}>
       <td className="mono nowrap">{c.countryCode}</td>
       <td>{c.availability}</td>
