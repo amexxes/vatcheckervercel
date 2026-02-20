@@ -4,7 +4,25 @@ import { randomUUID } from "crypto";
 
 // api/validate-batch.js
 const VIES_BASE = "https://ec.europa.eu/taxation_customs/vies/rest-api";
+const STATUS_CACHE_SEC = 30;
 
+async function getViesStatusSnapshot() {
+  try {
+    const cacheKey = "vies:status";
+    const cached = await kv.get(cacheKey);
+    if (cached) return cached;
+
+    const r = await fetchJson(`${VIES_BASE}/check-status`, { method: "GET" }, 10_000);
+    const list = Array.isArray(r?.data?.countries)
+      ? r.data.countries.map((c) => ({ countryCode: c.countryCode, availability: c.availability }))
+      : [];
+
+    await kv.set(cacheKey, list, { ex: STATUS_CACHE_SEC });
+    return list;
+  } catch {
+    return [];
+  }
+}
 const REQUESTER_MS = (process.env.REQUESTER_MS || "").toUpperCase();
 const REQUESTER_VAT = process.env.REQUESTER_VAT || "";
 
@@ -319,13 +337,15 @@ await kv.expire(resKey, JOB_TTL_SEC);
 
     const results = [...realtime.map((x) => x.row), ...queued.map((x) => x.row)];
 
-    return res.status(200).json({
-      duplicates_ignored,
-      vies_status: [],
-      results,
-      fr_job_id,
-      count: results.length,
-    });
+const vies_status = await getViesStatusSnapshot();
+
+return res.status(200).json({
+  duplicates_ignored,
+  vies_status,
+  results,
+  fr_job_id,
+  count: results.length,
+});
   } catch (e) {
     return res.status(500).json({
       error: "validate-batch failed",
