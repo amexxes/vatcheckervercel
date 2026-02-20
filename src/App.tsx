@@ -735,7 +735,7 @@ onEachFeature: (feature: any, lyr: any) => {
   <tr>
     <th style={{ width: 120 }}>Country</th>
     <th style={{ width: 220 }}>Availability</th>
-    <th style={{ width: 90, textAlign: "right" }}>In input</th>
+    <th style={{ width: 90, textAlign: "right" }}>VAT Aantal</th>
   </tr>
 </thead>
 <tbody>
