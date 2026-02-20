@@ -828,10 +828,12 @@ function exportPptxInfographic() {
                 placeholder="Client / Case (optioneel)"
                 style={{ flex: 1, minWidth: 220 }}
               />
-<button className="btn btn-secondary" onClick={exportExcel} disabled={!rows.length}>
+<button className="btn btn-secondary btn-export btn-excel" onClick={exportExcel} disabled={!rows.length}>
   Export Excel
 </button>
-              <button className="btn btn-secondary" onClick={exportPptxInfographic} disabled={!rows.length}>
+
+              
+<button className="btn btn-secondary btn-export btn-pptx" onClick={exportPptxInfographic} disabled={!rows.length}>
   Export PPTX
 </button>
 
