@@ -115,8 +115,8 @@ function computeCountryCountsFromInput(text: string): Record<string, number> {
 
 function vatCcToIso2ForFlag(ccRaw: string): string {
   let cc = String(ccRaw || "").toUpperCase().trim();
-  if (cc === "EL") cc = "GR"; // VIES gebruikt EL; vlag-lib gebruikt GR
-  if (cc === "XI") cc = "GB"; // NI heeft geen eigen ISO2 vlag
+  if (cc === "EL") cc = "GR";
+  if (cc === "XI") cc = "GB";
   return cc;
 }
 
@@ -229,6 +229,7 @@ export default function App() {
 
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
+  // (feature blijft bestaan; UI “Saved runs” panel is verwijderd)
   const [savedRuns, setSavedRuns] = useState<SavedRun[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("vat_saved_runs") || "[]");
@@ -260,37 +261,6 @@ export default function App() {
   const markerLayerRef = useRef<L.LayerGroup | null>(null);
   const geoJsonRef = useRef<any | null>(null);
   const loggedIsoRef = useRef<Set<string>>(new Set());
-
-  const ISO3_TO_ISO2: Record<string, string> = {
-    FRA: "FR",
-    DEU: "DE",
-    NLD: "NL",
-    BEL: "BE",
-    LUX: "LU",
-    ESP: "ES",
-    PRT: "PT",
-    ITA: "IT",
-    IRL: "IE",
-    AUT: "AT",
-    DNK: "DK",
-    SWE: "SE",
-    FIN: "FI",
-    POL: "PL",
-    CZE: "CZ",
-    SVK: "SK",
-    SVN: "SI",
-    HUN: "HU",
-    ROU: "RO",
-    BGR: "BG",
-    HRV: "HR",
-    GRC: "EL",
-    CYP: "CY",
-    MLT: "MT",
-    EST: "EE",
-    LVA: "LV",
-    LTU: "LT",
-    GBR: "XI",
-  };
 
   const countryCounts = useMemo(() => computeCountryCountsFromInput(vatInput), [vatInput]);
 
@@ -555,27 +525,6 @@ export default function App() {
     setSavedRuns((prev) => [{ id, ts: Date.now(), caseRef, input: vatInput, results: rows }, ...prev].slice(0, 30));
   }
 
-  function loadRun(id: string) {
-    const run = savedRuns.find((x) => x.id === id);
-    if (!run) return;
-    stopPolling();
-    setVatInput(run.input);
-    setCaseRef(run.caseRef || "");
-    setRows(run.results || []);
-    setLastUpdate(new Date(run.ts).toLocaleString("nl-NL"));
-  }
-
-  function updateNoteTag(row: VatRow, note: string, tag: "whitelist" | "blacklist" | "") {
-    const key = `${row.country_code || ""}:${row.vat_part || ""}`;
-    setNotes((prev) => ({ ...prev, [key]: { note, tag } }));
-    setRows((prev) =>
-      prev.map((r) => {
-        const k = `${r.country_code || ""}:${r.vat_part || ""}`;
-        return k === key ? { ...r, note, tag } : r;
-      })
-    );
-  }
-
   // --- Map init ---
   useEffect(() => {
     const el = document.getElementById("countryMap");
@@ -608,12 +557,10 @@ export default function App() {
           return r.json();
         })
         .then((j) => {
-          console.log("countries.geojson loaded", j);
           geoJsonRef.current = j;
           setMapGeoVersion((v) => v + 1);
         })
-        .catch((e) => {
-          console.error("countries.geojson failed", e);
+        .catch(() => {
           geoJsonRef.current = null;
           setMapGeoVersion((v) => v + 1);
         });
@@ -690,7 +637,6 @@ export default function App() {
 
           if (cc && !loggedIsoRef.current.has(cc)) {
             loggedIsoRef.current.add(cc);
-            console.log("map feature code:", cc, "count:", countryCounts[cc] || 0);
           }
 
           const n = cc ? countryCounts[cc] || 0 : 0;
@@ -779,7 +725,8 @@ export default function App() {
       </div>
 
       <div className="wrap">
-        <div className="grid">
+        <div className="grid" style={{ alignItems: "stretch" }}>
+          {/* LEFT */}
           <div className="card">
             <h2>Input</h2>
             <p className="hint">
@@ -868,7 +815,8 @@ export default function App() {
             <InputCountryBarChart inputEntries={inputEntries} maxInputCount={maxInputCount} />
           </div>
 
-          <div>
+          {/* RIGHT (Saved Runs panel removed, VIES card stretches) */}
+          <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 16, minHeight: 0 }}>
             <div className="card">
               <h2>Filter</h2>
               <div className="filterBox">
@@ -901,12 +849,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* ✅ FIXED: this card is properly closed */}
-            <div className="card" style={{ marginTop: 16 }}>
+            <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
               <h2>VIES status per land</h2>
               <p className="hint">Beschikbaarheid volgens VIES check-status.</p>
 
-              <div style={{ overflow: "auto", maxHeight: 260 }}>
+              <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                 {!viesStatus.length ? (
                   <div style={{ padding: 12, color: "var(--muted)" }}>No data</div>
                 ) : (
@@ -922,7 +869,7 @@ export default function App() {
                       .sort((a, b) => {
                         const ca = countryCounts[a.countryCode] || 0;
                         const cb = countryCounts[b.countryCode] || 0;
-                        if (cb !== ca) return cb - ca; // meest relevant bovenaan
+                        if (cb !== ca) return cb - ca;
                         return a.countryCode.localeCompare(b.countryCode, "en");
                       })
                       .map((c) => {
@@ -968,18 +915,6 @@ export default function App() {
                       })}
                   </div>
                 )}
-              </div>
-            </div>
-
-            <div className="card" style={{ marginTop: 16 }}>
-              <h2>Saved runs</h2>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {savedRuns.slice(0, 8).map((r) => (
-                  <button key={r.id} className="btn btn-secondary" onClick={() => loadRun(r.id)} style={{ textAlign: "left" }}>
-                    {new Date(r.ts).toLocaleString("nl-NL")} — {r.caseRef || "—"} — {r.results?.length || 0} rows
-                  </button>
-                ))}
-                {!savedRuns.length && <div className="hint">Nog geen runs opgeslagen.</div>}
               </div>
             </div>
           </div>
@@ -1071,7 +1006,15 @@ export default function App() {
                             </div>
 
                             <div className="row" style={{ marginTop: 10 }}>
-                              <select value={r.tag || ""} onChange={(e) => updateNoteTag(r, r.note || "", e.target.value as any)}>
+                              <select
+                                value={r.tag || ""}
+                                onChange={(e) => {
+                                  const key2 = `${r.country_code || ""}:${r.vat_part || ""}`;
+                                  const nextTag = e.target.value as any;
+                                  setNotes((prev) => ({ ...prev, [key2]: { note: r.note || "", tag: nextTag } }));
+                                  setRows((prev) => prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, tag: nextTag } : x)));
+                                }}
+                              >
                                 <option value="">No tag</option>
                                 <option value="whitelist">Whitelist</option>
                                 <option value="blacklist">Blacklist</option>
@@ -1080,7 +1023,12 @@ export default function App() {
                               <input
                                 type="text"
                                 value={r.note || ""}
-                                onChange={(e) => updateNoteTag(r, e.target.value, (r.tag as any) || "")}
+                                onChange={(e) => {
+                                  const key2 = `${r.country_code || ""}:${r.vat_part || ""}`;
+                                  const nextNote = e.target.value;
+                                  setNotes((prev) => ({ ...prev, [key2]: { note: nextNote, tag: (r.tag as any) || "" } }));
+                                  setRows((prev) => prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, note: nextNote } : x)));
+                                }}
                                 placeholder="Note (optioneel)"
                                 style={{ flex: 1, minWidth: 260 }}
                               />
