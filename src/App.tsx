@@ -731,23 +731,27 @@ onEachFeature: (feature: any, lyr: any) => {
               <p className="hint">Beschikbaarheid volgens VIES check-status.</p>
               <div style={{ overflow: "auto", maxHeight: 260 }}>
                 <table>
-                  <thead>
-                    <tr>
-                      <th style={{ width: 120 }}>Country</th>
-                      <th style={{ width: 220 }}>Availability</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {viesStatus.map((c) => (
-                      <tr key={c.countryCode}>
-                        <td className="mono nowrap">{c.countryCode}</td>
-                        <td>{c.availability}</td>
-                      </tr>
-                    ))}
-                    {!viesStatus.length && (
-                      <tr><td colSpan={2} style={{ padding: 12, color: "var(--muted)" }}>No data</td></tr>
-                    )}
-                  </tbody>
+<thead>
+  <tr>
+    <th style={{ width: 120 }}>Country</th>
+    <th style={{ width: 220 }}>Availability</th>
+    <th style={{ width: 90, textAlign: "right" }}>In input</th>
+  </tr>
+</thead>
+<tbody>
+  {viesStatus.map((c) => (
+    <tr key={c.countryCode}>
+      <td className="mono nowrap">{c.countryCode}</td>
+      <td>{c.availability}</td>
+      <td className="mono nowrap" style={{ textAlign: "right" }}>
+        {countryCounts[c.countryCode] || 0}
+      </td>
+    </tr>
+  ))}
+  {!viesStatus.length && (
+    <tr><td colSpan={3} style={{ padding: 12, color: "var(--muted)" }}>No data</td></tr>
+  )}
+</tbody>
                 </table>
               </div>
             </div>
