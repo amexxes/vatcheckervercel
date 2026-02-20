@@ -834,9 +834,7 @@ function exportPptxInfographic() {
               <button className="btn btn-secondary" onClick={exportPptxInfographic} disabled={!rows.length}>
   Export PPTX
 </button>
-              <button className="btn btn-secondary" onClick={saveRun} disabled={!rows.length}>
-                Save run
-              </button>
+
             </div>
 
             {duplicatesIgnored > 0 && (
