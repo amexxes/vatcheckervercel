@@ -98,7 +98,6 @@ async function viesCheck(p, requester) {
 }
 
 function backoffMs(attempt) {
-  // simpel + veilig (kan later fancier)
   const base = 10_000; // 10s
   const max = 5 * 60_000; // 5m
   const ms = Math.min(max, base * Math.pow(2, Math.max(0, attempt - 1)));
@@ -111,7 +110,7 @@ async function readAllResults(resKey) {
   const out = [];
   if (!obj) return out;
   for (const v of Object.values(obj)) {
-    try { out.push(JSON.parse(v)); } catch { /* ignore */ }
+    try { out.push(JSON.parse(v)); } catch {}
   }
   return out;
 }
@@ -134,7 +133,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
 
     const now = Date.now();
     if (task.nextRunAt && task.nextRunAt > now) {
-      // nog niet aan de beurt -> terugzetten en stoppen (voorkomt eindeloos draaien)
       await kv.lpush("queue:vies", raw);
       break;
     }
@@ -145,7 +143,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
     const meta = await kv.get(metaKey);
     if (!meta) continue;
 
-    // row -> processing
     let cur;
     try {
       const curRaw = await kv.hget(resKey, task.key);
@@ -158,7 +155,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
       await kv.hset(resKey, { [task.key]: JSON.stringify(cur) });
     }
 
-    // call VIES
     const r = await viesCheck(task.p, requester);
 
     if (r.ok) {
@@ -211,7 +207,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
       meta.updated_at = Date.now();
       await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-      // requeue
       task.attempt = attempt;
       task.nextRunAt = nextRetryAt;
       await kv.lpush("queue:vies", JSON.stringify(task));
@@ -220,7 +215,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
       continue;
     }
 
-    // non-retryable -> error + done++
     const row = {
       ...(cur || {}),
       state: "error",
@@ -239,15 +233,12 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500 } = {}) {
 
     processed++;
   }
-
-  return processed;
 }
 
 export default async function handler(req, res) {
   const { id } = req.query;
   if (!id) return res.status(400).json({ error: "Missing id" });
 
-  // kleine verwerking zodat polling ook “werk” doet
   await workerSlice({ maxTasks: 4, maxMs: 2500 });
 
   const metaKey = `job:${id}:meta`;
