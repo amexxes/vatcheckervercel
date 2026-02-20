@@ -820,22 +820,20 @@ function exportPptxInfographic() {
               Paste VAT numbers (1 per line). Non-FR is checked realtime. FR is queued (retry/backoff) and will update via polling.
             </p>
 
-            <div className="row" style={{ marginTop: 6 }}>
-              <input
-                type="text"
-                value={caseRef}
-                onChange={(e) => setCaseRef(e.target.value)}
-                placeholder="Client / Case (optioneel)"
-                style={{ flex: 1, minWidth: 220 }}
-              />
-<button className="btn btn-secondary btn-export btn-excel" onClick={exportExcel} disabled={!rows.length}>
-  Export Excel
-</button>
-
-              
-<button className="btn btn-secondary btn-export btn-pptx" onClick={exportPptxInfographic} disabled={!rows.length}>
-  Export PPTX
-</button>
+<div className="row inputActionsRow">
+  <input
+    type="text"
+    value={caseRef}
+    onChange={(e) => setCaseRef(e.target.value)}
+    placeholder="Client / Case (optioneel)"
+    style={{ flex: 1, minWidth: 220 }}
+  />
+  <button className="btn btn-secondary btn-export btn-excel" onClick={exportExcel} disabled={!rows.length}>
+    Export Excel
+  </button>
+  <button className="btn btn-secondary btn-export btn-pptx" onClick={exportPptxInfographic} disabled={!rows.length}>
+    Export PPTX
+  </button>
 
             </div>
 
