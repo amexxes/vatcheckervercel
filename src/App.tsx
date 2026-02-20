@@ -292,20 +292,6 @@ export default function App() {
     GBR: "XI",
   };
 
-  function featureToVatCc(feature: any): string {
-    const p = feature?.properties || {};
-    const raw2 = p.ISO_A2 ?? p.iso_a2 ?? p.ISO2 ?? p.iso2 ?? p["alpha-2"];
-
-    let cc2 = String(raw2 || "").toUpperCase().trim();
-    if (cc2 === "GR") cc2 = "EL";
-    if (cc2 === "GB") cc2 = "XI";
-    if (cc2 && cc2 !== "-99") return cc2;
-
-    const raw3 = p.ISO_A3 ?? p.iso_a3 ?? p.ISO3 ?? p.iso3;
-    const cc3 = String(raw3 || "").toUpperCase().trim();
-    return ISO3_TO_ISO2[cc3] || "";
-  }
-
   const countryCounts = useMemo(() => computeCountryCountsFromInput(vatInput), [vatInput]);
 
   const inputEntries = useMemo(() => {
@@ -496,13 +482,7 @@ export default function App() {
   }
 
   function getCellText(r: VatRow, colIndex: number): string {
-    const cols: Array<string> = [
-      r.state ?? "",
-      r.vat_number ?? "",
-      r.name ?? "",
-      r.address ?? "",
-      r.error_code ?? r.error ?? "",
-    ];
+    const cols: Array<string> = [r.state ?? "", r.vat_number ?? "", r.name ?? "", r.address ?? "", r.error_code ?? r.error ?? ""];
     return cols[colIndex] ?? "";
   }
 
@@ -921,83 +901,81 @@ export default function App() {
               </div>
             </div>
 
+            {/* ✅ FIXED: this card is properly closed */}
             <div className="card" style={{ marginTop: 16 }}>
               <h2>VIES status per land</h2>
               <p className="hint">Beschikbaarheid volgens VIES check-status.</p>
-<div style={{ overflow: "auto", maxHeight: 260 }}>
-  {!viesStatus.length ? (
-    <div style={{ padding: 12, color: "var(--muted)" }}>No data</div>
-  ) : (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-        gap: 10,
-        padding: 6,
-      }}
-    >
-      {[...viesStatus]
-        .sort((a, b) => {
-          const ca = countryCounts[a.countryCode] || 0;
-          const cb = countryCounts[b.countryCode] || 0;
-          if (cb !== ca) return cb - ca; // meest relevant bovenaan
-          return a.countryCode.localeCompare(b.countryCode, "en");
-        })
-        .map((c) => {
-          const ok = String(c.availability || "").toLowerCase() === "available";
-          const iso2 = vatCcToIso2ForFlag(c.countryCode);
 
-          return (
-            <div
-              key={c.countryCode}
-              title={`${c.countryCode} — ${c.availability}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                padding: "8px 10px",
-                borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.08)",
-                background: "rgba(255,255,255,0.18)",
-                backdropFilter: "blur(6px)",
-                WebkitBackdropFilter: "blur(6px)",
-              }}
-            >
-              <ReactCountryFlag
-                countryCode={iso2}
-                svg
-                style={{ width: "22px", height: "16px", borderRadius: 3 }}
-                title={c.countryCode}
-              />
-              <span
-                className="mono"
-                style={{
-                  fontWeight: 800,
-                  color: ok ? "var(--ok)" : "var(--bad)",
-                  fontSize: 14,
-                  lineHeight: "14px",
-                }}
-              >
-                {ok ? "✓" : "✕"}
-              </span>
+              <div style={{ overflow: "auto", maxHeight: 260 }}>
+                {!viesStatus.length ? (
+                  <div style={{ padding: 12, color: "var(--muted)" }}>No data</div>
+                ) : (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+                      gap: 10,
+                      padding: 6,
+                    }}
+                  >
+                    {[...viesStatus]
+                      .sort((a, b) => {
+                        const ca = countryCounts[a.countryCode] || 0;
+                        const cb = countryCounts[b.countryCode] || 0;
+                        if (cb !== ca) return cb - ca; // meest relevant bovenaan
+                        return a.countryCode.localeCompare(b.countryCode, "en");
+                      })
+                      .map((c) => {
+                        const ok = String(c.availability || "").toLowerCase() === "available";
+                        const iso2 = vatCcToIso2ForFlag(c.countryCode);
+
+                        return (
+                          <div
+                            key={c.countryCode}
+                            title={`${c.countryCode} — ${c.availability}`}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: 8,
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              border: "1px solid rgba(0,0,0,0.08)",
+                              background: "rgba(255,255,255,0.18)",
+                              backdropFilter: "blur(6px)",
+                              WebkitBackdropFilter: "blur(6px)",
+                            }}
+                          >
+                            <ReactCountryFlag
+                              countryCode={iso2}
+                              svg
+                              style={{ width: "22px", height: "16px", borderRadius: 3 }}
+                              title={c.countryCode}
+                            />
+                            <span
+                              className="mono"
+                              style={{
+                                fontWeight: 800,
+                                color: ok ? "var(--ok)" : "var(--bad)",
+                                fontSize: 14,
+                                lineHeight: "14px",
+                              }}
+                            >
+                              {ok ? "✓" : "✕"}
+                            </span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
             </div>
-          );
-        })}
-    </div>
-  )}
-</div>
 
             <div className="card" style={{ marginTop: 16 }}>
               <h2>Saved runs</h2>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {savedRuns.slice(0, 8).map((r) => (
-                  <button
-                    key={r.id}
-                    className="btn btn-secondary"
-                    onClick={() => loadRun(r.id)}
-                    style={{ textAlign: "left" }}
-                  >
+                  <button key={r.id} className="btn btn-secondary" onClick={() => loadRun(r.id)} style={{ textAlign: "left" }}>
                     {new Date(r.ts).toLocaleString("nl-NL")} — {r.caseRef || "—"} — {r.results?.length || 0} rows
                   </button>
                 ))}
