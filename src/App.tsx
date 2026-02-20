@@ -924,38 +924,69 @@ export default function App() {
             <div className="card" style={{ marginTop: 16 }}>
               <h2>VIES status per land</h2>
               <p className="hint">Beschikbaarheid volgens VIES check-status.</p>
-              <div style={{ overflow: "auto", maxHeight: 260 }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th style={{ width: 120 }}>Country</th>
-                      <th style={{ width: 220 }}>Availability</th>
-                      <th style={{ width: 90, textAlign: "right" }}>VAT Aantal</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...viesStatus]
-                      .sort((a, b) => (countryCounts[b.countryCode] || 0) - (countryCounts[a.countryCode] || 0))
-                      .map((c) => (
-                        <tr key={c.countryCode}>
-                          <td className="mono nowrap">{c.countryCode}</td>
-                          <td>{c.availability}</td>
-                          <td className="mono nowrap" style={{ textAlign: "right" }}>
-                            {countryCounts[c.countryCode] || 0}
-                          </td>
-                        </tr>
-                      ))}
-                    {!viesStatus.length && (
-                      <tr>
-                        <td colSpan={3} style={{ padding: 12, color: "var(--muted)" }}>
-                          No data
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+<div style={{ overflow: "auto", maxHeight: 260 }}>
+  {!viesStatus.length ? (
+    <div style={{ padding: 12, color: "var(--muted)" }}>No data</div>
+  ) : (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+        gap: 10,
+        padding: 6,
+      }}
+    >
+      {[...viesStatus]
+        .sort((a, b) => {
+          const ca = countryCounts[a.countryCode] || 0;
+          const cb = countryCounts[b.countryCode] || 0;
+          if (cb !== ca) return cb - ca; // meest relevant bovenaan
+          return a.countryCode.localeCompare(b.countryCode, "en");
+        })
+        .map((c) => {
+          const ok = String(c.availability || "").toLowerCase() === "available";
+          const iso2 = vatCcToIso2ForFlag(c.countryCode);
+
+          return (
+            <div
+              key={c.countryCode}
+              title={`${c.countryCode} — ${c.availability}`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "8px 10px",
+                borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.08)",
+                background: "rgba(255,255,255,0.18)",
+                backdropFilter: "blur(6px)",
+                WebkitBackdropFilter: "blur(6px)",
+              }}
+            >
+              <ReactCountryFlag
+                countryCode={iso2}
+                svg
+                style={{ width: "22px", height: "16px", borderRadius: 3 }}
+                title={c.countryCode}
+              />
+              <span
+                className="mono"
+                style={{
+                  fontWeight: 800,
+                  color: ok ? "var(--ok)" : "var(--bad)",
+                  fontSize: 14,
+                  lineHeight: "14px",
+                }}
+              >
+                {ok ? "✓" : "✕"}
+              </span>
             </div>
+          );
+        })}
+    </div>
+  )}
+</div>
 
             <div className="card" style={{ marginTop: 16 }}>
               <h2>Saved runs</h2>
