@@ -770,12 +770,23 @@ onEachFeature: (feature: any, lyr: any) => {
               gap: 10,
             }}
           >
-            <div className="mono" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span aria-hidden="true" style={{ fontSize: 14, width: 18, textAlign: "center" }}>
-                {flag || "🏳️"}
-              </span>
-              <span className="nowrap">{cc}</span>
-            </div>
+<div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+  <span
+    aria-hidden="true"
+    style={{
+      fontSize: 16,
+      width: 20,
+      textAlign: "center",
+      lineHeight: "16px",
+      fontFamily:
+        '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",system-ui,sans-serif',
+    }}
+  >
+    {flag || "🏳️"}
+  </span>
+
+  <span className="mono nowrap">{cc}</span>
+</div>
 
             <div
               title={`${cc}: ${n}`}
