@@ -1,41 +1,23 @@
 // /src/App.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
-import ReactCountryFlag from "react-country-flag";
 import type { FrJobResponse, ValidateBatchResponse, VatRow } from "./types";
+import ReactCountryFlag from "react-country-flag";
 
 type SortState = { colIndex: number | null; asc: boolean };
 type SavedRun = { id: string; ts: number; caseRef: string; input: string; results: VatRow[] };
 
 const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
-  AT: { lat: 48.2082, lon: 16.3738 },
-  BE: { lat: 50.8503, lon: 4.3517 },
-  BG: { lat: 42.6977, lon: 23.3219 },
-  CY: { lat: 35.1856, lon: 33.3823 },
-  CZ: { lat: 50.0755, lon: 14.4378 },
-  DE: { lat: 52.52, lon: 13.405 },
-  DK: { lat: 55.6761, lon: 12.5683 },
-  EE: { lat: 59.437, lon: 24.7536 },
-  EL: { lat: 37.9838, lon: 23.7275 },
-  ES: { lat: 40.4168, lon: -3.7038 },
-  FI: { lat: 60.1699, lon: 24.9384 },
-  FR: { lat: 48.8566, lon: 2.3522 },
-  HR: { lat: 45.815, lon: 15.9819 },
-  HU: { lat: 47.4979, lon: 19.0402 },
-  IE: { lat: 53.3498, lon: -6.2603 },
-  IT: { lat: 41.9028, lon: 12.4964 },
-  LT: { lat: 54.6872, lon: 25.2797 },
-  LU: { lat: 49.6116, lon: 6.1319 },
-  LV: { lat: 56.9496, lon: 24.1052 },
-  MT: { lat: 35.8989, lon: 14.5146 },
-  NL: { lat: 52.3676, lon: 4.9041 },
-  PL: { lat: 52.2297, lon: 21.0122 },
-  PT: { lat: 38.7223, lon: -9.1393 },
-  RO: { lat: 44.4268, lon: 26.1025 },
-  SE: { lat: 59.3293, lon: 18.0686 },
-  SI: { lat: 46.0569, lon: 14.5058 },
-  SK: { lat: 48.1486, lon: 17.1077 },
-  XI: { lat: 54.5973, lon: -5.9301 },
+  AT:{lat:48.2082,lon:16.3738}, BE:{lat:50.8503,lon:4.3517}, BG:{lat:42.6977,lon:23.3219},
+  CY:{lat:35.1856,lon:33.3823}, CZ:{lat:50.0755,lon:14.4378}, DE:{lat:52.52,lon:13.405},
+  DK:{lat:55.6761,lon:12.5683}, EE:{lat:59.437,lon:24.7536}, EL:{lat:37.9838,lon:23.7275},
+  ES:{lat:40.4168,lon:-3.7038}, FI:{lat:60.1699,lon:24.9384}, FR:{lat:48.8566,lon:2.3522},
+  HR:{lat:45.815,lon:15.9819}, HU:{lat:47.4979,lon:19.0402}, IE:{lat:53.3498,lon:-6.2603},
+  IT:{lat:41.9028,lon:12.4964}, LT:{lat:54.6872,lon:25.2797}, LU:{lat:49.6116,lon:6.1319},
+  LV:{lat:56.9496,lon:24.1052}, MT:{lat:35.8989,lon:14.5146}, NL:{lat:52.3676,lon:4.9041},
+  PL:{lat:52.2297,lon:21.0122}, PT:{lat:38.7223,lon:-9.1393}, RO:{lat:44.4268,lon:26.1025},
+  SE:{lat:59.3293,lon:18.0686}, SI:{lat:46.0569,lon:14.5058}, SK:{lat:48.1486,lon:17.1077},
+  XI:{lat:54.5973,lon:-5.9301},
 };
 
 const ERROR_MAP: Record<string, string> = {
@@ -45,6 +27,15 @@ const ERROR_MAP: Record<string, string> = {
   GLOBAL_MAX_CONCURRENT_REQ: "VIES is druk; we proberen later opnieuw.",
   SERVICE_UNAVAILABLE: "VIES service unavailable; we proberen later opnieuw.",
   NETWORK_ERROR: "Netwerkfout richting VIES; we proberen later opnieuw.",
+};
+
+const ISO3_TO_ISO2: Record<string, string> = {
+  FRA: "FR", DEU: "DE", NLD: "NL", BEL: "BE", LUX: "LU",
+  ESP: "ES", PRT: "PT", ITA: "IT", IRL: "IE", AUT: "AT",
+  DNK: "DK", SWE: "SE", FIN: "FI", POL: "PL", CZE: "CZ",
+  SVK: "SK", SVN: "SI", HUN: "HU", ROU: "RO", BGR: "BG",
+  HRV: "HR", GRC: "EL", CYP: "CY", MLT: "MT", EST: "EE",
+  LVA: "LV", LTU: "LT", GBR: "XI",
 };
 
 function normalizeLine(s: string): string {
@@ -57,7 +48,7 @@ function normalizeLine(s: string): string {
 
 function stateClass(state?: string): string {
   const s = String(state || "").toLowerCase();
-  if (["valid", "invalid", "retry", "queued", "processing", "error"].includes(s)) return s;
+  if (["valid","invalid","retry","queued","processing","error"].includes(s)) return s;
   return "queued";
 }
 
@@ -115,9 +106,33 @@ function computeCountryCountsFromInput(text: string): Record<string, number> {
 
 function vatCcToIso2ForFlag(ccRaw: string): string {
   let cc = String(ccRaw || "").toUpperCase().trim();
-  if (cc === "EL") cc = "GR"; // VIES gebruikt EL; vlag-lib gebruikt GR
-  if (cc === "XI") cc = "GB"; // NI heeft geen eigen ISO2 vlag
+  if (cc === "EL") cc = "GR";
+  if (cc === "XI") cc = "GB";
   return cc;
+}
+
+// Normalize a GeoJSON feature's country code to VAT cc (EL, XI, etc.)
+function featureToVatCc(feature: any): string {
+  const p = feature?.properties || {};
+
+  const raw2 = p.ISO_A2 ?? p.iso_a2 ?? p.ISO2 ?? p.iso2 ?? p["alpha-2"];
+  let cc2 = String(raw2 || "").toUpperCase().trim();
+  if (cc2 === "GR") cc2 = "EL";
+  if (cc2 === "GB") cc2 = "XI";
+  if (cc2 && cc2 !== "-99") return cc2;
+
+  const raw3 = p.ISO_A3 ?? p.iso_a3 ?? p.ISO3 ?? p.iso3;
+  const cc3 = String(raw3 || "").toUpperCase().trim();
+  return ISO3_TO_ISO2[cc3] || "";
+}
+
+function getFillColor(ratio: number): string {
+  if (ratio >= 0.80) return "#0b2e5f";
+  if (ratio >= 0.55) return "#1f6aa5";
+  if (ratio >= 0.35) return "#2bb3e6";
+  if (ratio >= 0.18) return "#7dd3f7";
+  if (ratio > 0)     return "#cfefff";
+  return "#ffffff";
 }
 
 function InputCountryBarChart({
@@ -143,14 +158,29 @@ function InputCountryBarChart({
         WebkitBackdropFilter: "blur(6px)",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 8,
+        }}
+      >
         <div style={{ fontSize: 12, color: "var(--muted)" }}>Input per land</div>
         <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
           {total} totaal
         </div>
       </div>
 
-      <div style={{ maxHeight: 150, overflow: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        style={{
+          maxHeight: 150,
+          overflow: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
         {inputEntries.map(([cc, n]) => {
           const pct = maxInputCount ? (n / maxInputCount) * 100 : 0;
           const iso2 = vatCcToIso2ForFlag(cc);
@@ -189,7 +219,8 @@ function InputCountryBarChart({
                     width: `${pct}%`,
                     height: "100%",
                     borderRadius: 999,
-                    background: "linear-gradient(90deg, rgba(43,179,230,0.85), rgba(11,46,95,0.85))",
+                    background:
+                      "linear-gradient(90deg, rgba(43,179,230,0.85), rgba(11,46,95,0.85))",
                   }}
                 />
               </div>
@@ -230,19 +261,11 @@ export default function App() {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   const [savedRuns, setSavedRuns] = useState<SavedRun[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("vat_saved_runs") || "[]");
-    } catch {
-      return [];
-    }
+    try { return JSON.parse(localStorage.getItem("vat_saved_runs") || "[]"); } catch { return []; }
   });
 
-  const [notes, setNotes] = useState<Record<string, { note: string; tag: "whitelist" | "blacklist" | "" }>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("vat_notes") || "{}");
-    } catch {
-      return {};
-    }
+  const [notes, setNotes] = useState<Record<string, { note: string; tag: "whitelist"|"blacklist"|"" }>>(() => {
+    try { return JSON.parse(localStorage.getItem("vat_notes") || "{}"); } catch { return {}; }
   });
 
   useEffect(() => {
@@ -254,57 +277,15 @@ export default function App() {
   }, [notes]);
 
   const currentFrJobIdRef = useRef<string | null>(null);
+  const caseRefRef = useRef(caseRef);
   const pollTimerRef = useRef<number | null>(null);
 
   const mapRef = useRef<L.Map | null>(null);
   const markerLayerRef = useRef<L.LayerGroup | null>(null);
   const geoJsonRef = useRef<any | null>(null);
-  const loggedIsoRef = useRef<Set<string>>(new Set());
 
-  const ISO3_TO_ISO2: Record<string, string> = {
-    FRA: "FR",
-    DEU: "DE",
-    NLD: "NL",
-    BEL: "BE",
-    LUX: "LU",
-    ESP: "ES",
-    PRT: "PT",
-    ITA: "IT",
-    IRL: "IE",
-    AUT: "AT",
-    DNK: "DK",
-    SWE: "SE",
-    FIN: "FI",
-    POL: "PL",
-    CZE: "CZ",
-    SVK: "SK",
-    SVN: "SI",
-    HUN: "HU",
-    ROU: "RO",
-    BGR: "BG",
-    HRV: "HR",
-    GRC: "EL",
-    CYP: "CY",
-    MLT: "MT",
-    EST: "EE",
-    LVA: "LV",
-    LTU: "LT",
-    GBR: "XI",
-  };
-
-  function featureToVatCc(feature: any): string {
-    const p = feature?.properties || {};
-    const raw2 = p.ISO_A2 ?? p.iso_a2 ?? p.ISO2 ?? p.iso2 ?? p["alpha-2"];
-
-    let cc2 = String(raw2 || "").toUpperCase().trim();
-    if (cc2 === "GR") cc2 = "EL";
-    if (cc2 === "GB") cc2 = "XI";
-    if (cc2 && cc2 !== "-99") return cc2;
-
-    const raw3 = p.ISO_A3 ?? p.iso_a3 ?? p.ISO3 ?? p.iso3;
-    const cc3 = String(raw3 || "").toUpperCase().trim();
-    return ISO3_TO_ISO2[cc3] || "";
-  }
+  // Keep caseRefRef in sync so polling closures always read the latest value
+  useEffect(() => { caseRefRef.current = caseRef; }, [caseRef]);
 
   const countryCounts = useMemo(() => computeCountryCountsFromInput(vatInput), [vatInput]);
 
@@ -320,15 +301,15 @@ export default function App() {
 
   const filteredRows = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const base = !q ? rows : rows.filter((r) => JSON.stringify(r).toLowerCase().includes(q));
+    const base = !q
+      ? rows
+      : rows.filter((r) => JSON.stringify(r).toLowerCase().includes(q));
 
-    // Als je handmatig sorteert via kolom-klik: laat die sortering leidend zijn
     if (sortState.colIndex !== null) return base;
 
     const prio = (state?: string) => {
       const s = String(state || "").toLowerCase();
-      if (s === "queued" || s === "retry" || s === "processing") return 0;
-      return 1;
+      return (s === "queued" || s === "retry" || s === "processing") ? 0 : 1;
     };
 
     return [...base].sort((a, b) => {
@@ -338,34 +319,20 @@ export default function App() {
 
       const na = typeof a.next_retry_at === "number" ? a.next_retry_at : Number.POSITIVE_INFINITY;
       const nb = typeof b.next_retry_at === "number" ? b.next_retry_at : Number.POSITIVE_INFINITY;
-      if (na !== nb) return na - nb;
-
-      return 0;
+      return na - nb;
     });
   }, [rows, filter, sortState.colIndex]);
 
   const stats = useMemo(() => {
-    const total = rows.length;
-    let done = 0,
-      vOk = 0,
-      vBad = 0,
-      pending = 0,
-      err = 0;
+    let total = rows.length;
+    let done = 0, vOk = 0, vBad = 0, pending = 0, err = 0;
 
     for (const r of rows) {
       const st = String(r.state || "").toLowerCase();
-      if (st === "valid") {
-        done++;
-        vOk++;
-      } else if (st === "invalid") {
-        done++;
-        vBad++;
-      } else if (st === "error") {
-        done++;
-        err++;
-      } else if (st === "queued" || st === "retry" || st === "processing") {
-        pending++;
-      }
+      if (st === "valid")   { done++; vOk++; }
+      else if (st === "invalid") { done++; vBad++; }
+      else if (st === "error")   { done++; err++; }
+      else if (st === "queued" || st === "retry" || st === "processing") { pending++; }
     }
     return { total, done, vOk, vBad, pending, err };
   }, [rows]);
@@ -383,8 +350,15 @@ export default function App() {
     currentFrJobIdRef.current = null;
   }
 
+  function rowKey(r: VatRow): string {
+    if (r.country_code && r.vat_part) return `${r.country_code}:${r.vat_part}`;
+    if (r.vat_number) return r.vat_number;
+    if (r.input) return r.input;
+    return "";
+  }
+
   function enrichRow(r: VatRow): VatRow {
-    const key = `${r.country_code || ""}:${r.vat_part || ""}`;
+    const key = rowKey(r);
     const fmt = validateFormat(r.vat_number || r.input || "");
     const user = notes[key] || { note: "", tag: "" };
     return {
@@ -393,7 +367,7 @@ export default function App() {
       format_reason: fmt.reason,
       note: user.note,
       tag: user.tag,
-      case_ref: r.case_ref || caseRef,
+      case_ref: r.case_ref || caseRefRef.current,
     };
   }
 
@@ -408,12 +382,13 @@ export default function App() {
       setRows((prev) => {
         const map = new Map<string, VatRow>();
         for (const r of prev) {
-          const k = `${r.country_code || ""}:${r.vat_part || ""}` || r.vat_number || r.input || crypto.randomUUID();
-          map.set(k, r);
+          const k = rowKey(r);
+          if (k) map.set(k, r);
         }
 
-        for (const r of data.results || []) {
-          const k = `${r.country_code || ""}:${r.vat_part || ""}` || r.vat_number || r.input || crypto.randomUUID();
+        for (const r of (data.results || [])) {
+          const k = rowKey(r);
+          if (!k) continue;
           const merged = { ...map.get(k), ...r };
           map.set(k, enrichRow(merged));
         }
@@ -425,7 +400,7 @@ export default function App() {
 
       if (data.job.status === "completed") stopPolling();
     } catch {
-      // ignore
+      // ignore transient errors
     }
   }
 
@@ -441,10 +416,7 @@ export default function App() {
     setDuplicatesIgnored(0);
 
     const lines = vatInput.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    if (!lines.length) {
-      setLoading(false);
-      return;
-    }
+    if (!lines.length) { setLoading(false); return; }
 
     try {
       const resp = await fetch("/api/validate-batch", {
@@ -460,7 +432,6 @@ export default function App() {
 
       const enriched = (data.results || []).map((r: VatRow) => enrichRow({ ...r, case_ref: caseRef }));
       setRows(enriched);
-
       setLastUpdate(new Date().toLocaleString("nl-NL"));
 
       if (data.fr_job_id) {
@@ -496,12 +467,13 @@ export default function App() {
   }
 
   function getCellText(r: VatRow, colIndex: number): string {
-    const cols: Array<string> = [
+    const cols: string[] = [
       r.state ?? "",
       r.vat_number ?? "",
       r.name ?? "",
       r.address ?? "",
       r.error_code ?? r.error ?? "",
+      r.details ?? "",
     ];
     return cols[colIndex] ?? "";
   }
@@ -531,33 +503,15 @@ export default function App() {
   }, [stats.done, stats.total]);
 
   function exportCsv() {
-    const headers = [
-      "case_ref",
-      "input",
-      "vat_number",
-      "country_code",
-      "valid",
-      "state",
-      "name",
-      "address",
-      "error_code",
-      "error",
-      "attempt",
-      "next_retry_at",
-      "note",
-      "tag",
-      "checked_at",
-    ];
+    const headers = ["case_ref","input","vat_number","country_code","valid","state","name","address","error_code","error","attempt","next_retry_at","note","tag","checked_at"];
     const lines = [
       headers.join(","),
       ...rows.map((r) =>
-        headers
-          .map((h) => {
-            const v = (r as any)[h];
-            const s = v === null || v === undefined ? "" : String(v);
-            return `"${s.replace(/"/g, '""')}"`;
-          })
-          .join(",")
+        headers.map((h) => {
+          const v = (r as any)[h];
+          const s = v === null || v === undefined ? "" : String(v);
+          return `"${s.replace(/"/g, '""')}"`;
+        }).join(",")
       ),
     ].join("\n");
 
@@ -572,7 +526,9 @@ export default function App() {
 
   function saveRun() {
     const id = crypto.randomUUID();
-    setSavedRuns((prev) => [{ id, ts: Date.now(), caseRef, input: vatInput, results: rows }, ...prev].slice(0, 30));
+    setSavedRuns((prev) =>
+      [{ id, ts: Date.now(), caseRef, input: vatInput, results: rows }, ...prev].slice(0, 30)
+    );
   }
 
   function loadRun(id: string) {
@@ -585,14 +541,11 @@ export default function App() {
     setLastUpdate(new Date(run.ts).toLocaleString("nl-NL"));
   }
 
-  function updateNoteTag(row: VatRow, note: string, tag: "whitelist" | "blacklist" | "") {
-    const key = `${row.country_code || ""}:${row.vat_part || ""}`;
+  function updateNoteTag(row: VatRow, note: string, tag: "whitelist"|"blacklist"|"") {
+    const key = rowKey(row);
     setNotes((prev) => ({ ...prev, [key]: { note, tag } }));
     setRows((prev) =>
-      prev.map((r) => {
-        const k = `${r.country_code || ""}:${r.vat_part || ""}`;
-        return k === key ? { ...r, note, tag } : r;
-      })
+      prev.map((r) => rowKey(r) === key ? { ...r, note, tag } : r)
     );
   }
 
@@ -618,7 +571,6 @@ export default function App() {
       }).addTo(map);
 
       const layer = L.layerGroup().addTo(map);
-
       mapRef.current = map;
       markerLayerRef.current = layer;
 
@@ -628,17 +580,16 @@ export default function App() {
           return r.json();
         })
         .then((j) => {
-          console.log("countries.geojson loaded", j);
           geoJsonRef.current = j;
           setMapGeoVersion((v) => v + 1);
         })
-        .catch((e) => {
-          console.error("countries.geojson failed", e);
+        .catch(() => {
           geoJsonRef.current = null;
           setMapGeoVersion((v) => v + 1);
         });
     } catch {
-      el.innerHTML = "<div style='padding:12px;color:#6b7280;font-size:12px;'>Map unavailable</div>";
+      el.innerHTML =
+        "<div style='padding:12px;color:#6b7280;font-size:12px;'>Map unavailable</div>";
     }
 
     return () => {
@@ -648,6 +599,7 @@ export default function App() {
     };
   }, []);
 
+  // --- Map update ---
   useEffect(() => {
     const entries = Object.entries(countryCounts).sort((a, b) => b[1] - a[1]);
     setMapCount(`${entries.length} countries`);
@@ -655,10 +607,7 @@ export default function App() {
     if (!entries.length) {
       setMapLegend("—");
     } else {
-      const top = entries
-        .slice(0, 6)
-        .map(([cc, n]) => `${cc}(${n})`)
-        .join(" · ");
+      const top = entries.slice(0, 6).map(([cc, n]) => `${cc}(${n})`).join(" · ");
       const more = entries.length > 6 ? ` +${entries.length - 6}` : "";
       setMapLegend(top + more);
     }
@@ -669,83 +618,25 @@ export default function App() {
 
     layer.clearLayers();
 
+    const maxCount = Math.max(0, ...Object.values(countryCounts));
+
     if (geoJsonRef.current) {
       L.geoJSON(geoJsonRef.current as any, {
         style: (feature: any) => {
-          const p = feature?.properties || {};
-
-          const raw =
-            p.ISO_A2 ??
-            p.iso_a2 ??
-            p.ISO2 ??
-            p.iso2 ??
-            p["alpha-2"] ??
-            p["Alpha-2"] ??
-            p["ISO3166-1-Alpha-2"] ??
-            p.ISO_A3 ??
-            p.iso_a3 ??
-            p.ISO3 ??
-            p.iso3 ??
-            p.ADMIN ??
-            p.name ??
-            p.NAME ??
-            p.Name;
-
-          let cc = String(raw || "").toUpperCase().trim();
-
-          if (cc === "FRA") cc = "FR";
-          if (cc === "DEU") cc = "DE";
-          if (cc === "NLD") cc = "NL";
-          if (cc === "BEL") cc = "BE";
-          if (cc === "LUX") cc = "LU";
-          if (cc === "ESP") cc = "ES";
-          if (cc === "PRT") cc = "PT";
-          if (cc === "ITA") cc = "IT";
-          if (cc === "IRL") cc = "IE";
-          if (cc === "GRC") cc = "EL";
-          if (cc === "GBR") cc = "XI";
-
-          if (cc === "GR") cc = "EL";
-          if (cc === "GB") cc = "XI";
-
-          if (cc && !loggedIsoRef.current.has(cc)) {
-            loggedIsoRef.current.add(cc);
-            console.log("map feature code:", cc, "count:", countryCounts[cc] || 0);
-          }
-
-          const n = cc ? countryCounts[cc] || 0 : 0;
-          const max = Math.max(0, ...Object.values(countryCounts));
-          const ratio = max > 0 ? n / max : 0;
-
-          let fill = "#ffffff";
-          if (ratio >= 0.8) fill = "#0b2e5f";
-          else if (ratio >= 0.55) fill = "#1f6aa5";
-          else if (ratio >= 0.35) fill = "#2bb3e6";
-          else if (ratio >= 0.18) fill = "#7dd3f7";
-          else if (ratio > 0) fill = "#cfefff";
+          const cc = featureToVatCc(feature);
+          const n = cc ? (countryCounts[cc] || 0) : 0;
+          const ratio = maxCount > 0 ? n / maxCount : 0;
 
           return {
             color: "#0b2e5f",
             weight: 0.8,
             opacity: 0.7,
-            fillColor: fill,
+            fillColor: getFillColor(ratio),
             fillOpacity: n ? 0.85 : 0.05,
           };
         },
-
         onEachFeature: (feature: any, lyr: any) => {
-          const p = feature?.properties || {};
-          const raw = p.ISO_A2 ?? p.iso_a2 ?? p.ISO2 ?? p.iso2 ?? p.ISO_A3 ?? p.iso_a3 ?? p.ISO3 ?? p.iso3;
-          let cc = String(raw || "").toUpperCase().trim();
-
-          if (cc === "FRA") cc = "FR";
-          if (cc === "DEU") cc = "DE";
-          if (cc === "NLD") cc = "NL";
-          if (cc === "GRC") cc = "EL";
-          if (cc === "GBR") cc = "XI";
-          if (cc === "GR") cc = "EL";
-          if (cc === "GB") cc = "XI";
-
+          const cc = featureToVatCc(feature);
           if (!cc) return;
           const n = countryCounts[cc] || 0;
           lyr.bindTooltip(`${cc} • ${n}`, { direction: "top", opacity: 0.9 });
@@ -775,25 +666,15 @@ export default function App() {
         <div className="banner-inner">
           <div className="brand">
             <div className="mark" aria-hidden="true">
-              <div className="mark-bars">
-                <span />
-                <span />
-                <span />
-              </div>
+              <div className="mark-bars"><span /><span /><span /></div>
               <div className="mark-text">RSM</div>
             </div>
             <div className="title">VAT validation</div>
           </div>
 
           <div className="chipsRow" style={{ marginTop: 0, width: "100%", maxWidth: 560 }}>
-            <div className="chip">
-              <span>FR job</span>
-              <b className="nowrap">{frText}</b>
-            </div>
-            <div className="chip">
-              <span>Last update</span>
-              <b className="nowrap">{lastUpdate}</b>
-            </div>
+            <div className="chip"><span>FR job</span><b className="nowrap">{frText}</b></div>
+            <div className="chip"><span>Last update</span><b className="nowrap">{lastUpdate}</b></div>
           </div>
         </div>
       </div>
@@ -814,12 +695,8 @@ export default function App() {
                 placeholder="Client / Case (optioneel)"
                 style={{ flex: 1, minWidth: 220 }}
               />
-              <button className="btn btn-secondary" onClick={exportCsv} disabled={!rows.length}>
-                Export CSV
-              </button>
-              <button className="btn btn-secondary" onClick={saveRun} disabled={!rows.length}>
-                Save run
-              </button>
+              <button className="btn btn-secondary" onClick={exportCsv} disabled={!rows.length}>Export CSV</button>
+              <button className="btn btn-secondary" onClick={saveRun} disabled={!rows.length}>Save run</button>
             </div>
 
             {duplicatesIgnored > 0 && (
@@ -845,8 +722,7 @@ export default function App() {
               <div style={{ flex: 1 }} />
 
               <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
-                Progress: <b style={{ color: "var(--text)" }}>{progressText}</b> ·{" "}
-                <b style={{ color: "var(--text)" }}>{progressPct}%</b>
+                Progress: <b style={{ color: "var(--text)" }}>{progressText}</b> · <b style={{ color: "var(--text)" }}>{progressPct}%</b>
               </div>
             </div>
 
@@ -855,30 +731,12 @@ export default function App() {
             </div>
 
             <div className="stats">
-              <div className="stat">
-                <span>Total</span>
-                <b>{stats.total}</b>
-              </div>
-              <div className="stat">
-                <span>Done</span>
-                <b>{stats.done}</b>
-              </div>
-              <div className="stat">
-                <span>Valid</span>
-                <b style={{ color: "var(--ok)" }}>{stats.vOk}</b>
-              </div>
-              <div className="stat">
-                <span>Invalid</span>
-                <b style={{ color: "var(--bad)" }}>{stats.vBad}</b>
-              </div>
-              <div className="stat">
-                <span>Pending</span>
-                <b style={{ color: "var(--warn)" }}>{stats.pending}</b>
-              </div>
-              <div className="stat">
-                <span>Error</span>
-                <b style={{ color: "var(--bad)" }}>{stats.err}</b>
-              </div>
+              <div className="stat"><span>Total</span><b>{stats.total}</b></div>
+              <div className="stat"><span>Done</span><b>{stats.done}</b></div>
+              <div className="stat"><span>Valid</span><b style={{ color: "var(--ok)" }}>{stats.vOk}</b></div>
+              <div className="stat"><span>Invalid</span><b style={{ color: "var(--bad)" }}>{stats.vBad}</b></div>
+              <div className="stat"><span>Pending</span><b style={{ color: "var(--warn)" }}>{stats.pending}</b></div>
+              <div className="stat"><span>Error</span><b style={{ color: "var(--bad)" }}>{stats.err}</b></div>
             </div>
 
             <div className="callout" style={{ marginTop: 14 }}>
@@ -892,7 +750,12 @@ export default function App() {
             <div className="card">
               <h2>Filter</h2>
               <div className="filterBox">
-                <input type="text" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Search in results…" />
+                <input
+                  type="text"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder="Search in results…"
+                />
                 <div className="callout">
                   Sorting: <span className="mono">{sortLabel || "—"}</span>
                 </div>
@@ -901,17 +764,13 @@ export default function App() {
               <div className="mapbox">
                 <div className="mapbox-head">
                   <div className="mapbox-title">Input distribution</div>
-                  <div className="mapbox-sub">
-                    <span className="nowrap">{mapCount}</span>
-                  </div>
+                  <div className="mapbox-sub"><span className="nowrap">{mapCount}</span></div>
                 </div>
 
                 <div id="countryMap" />
 
                 <div className="mapbox-foot">
-                  <div id="mapLegend" title={mapLegend}>
-                    {mapLegend}
-                  </div>
+                  <div id="mapLegend" title={mapLegend}>{mapLegend}</div>
                   <div className="map-attrib">
                     <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
                       © OpenStreetMap
@@ -946,11 +805,7 @@ export default function App() {
                         </tr>
                       ))}
                     {!viesStatus.length && (
-                      <tr>
-                        <td colSpan={3} style={{ padding: 12, color: "var(--muted)" }}>
-                          No data
-                        </td>
-                      </tr>
+                      <tr><td colSpan={3} style={{ padding: 12, color: "var(--muted)" }}>No data</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -961,12 +816,7 @@ export default function App() {
               <h2>Saved runs</h2>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {savedRuns.slice(0, 8).map((r) => (
-                  <button
-                    key={r.id}
-                    className="btn btn-secondary"
-                    onClick={() => loadRun(r.id)}
-                    style={{ textAlign: "left" }}
-                  >
+                  <button key={r.id} className="btn btn-secondary" onClick={() => loadRun(r.id)} style={{ textAlign: "left" }}>
                     {new Date(r.ts).toLocaleString("nl-NL")} — {r.caseRef || "—"} — {r.results?.length || 0} rows
                   </button>
                 ))}
@@ -988,21 +838,12 @@ export default function App() {
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: 160 }} onClick={() => sortByColumn(0, "State")}>
-                    State
-                  </th>
-                  <th style={{ width: 180 }} onClick={() => sortByColumn(1, "VAT")}>
-                    VAT
-                  </th>
-                  <th style={{ width: 280 }} onClick={() => sortByColumn(2, "Name")}>
-                    Name
-                  </th>
-                  <th style={{ width: 280 }} onClick={() => sortByColumn(3, "Address")}>
-                    Address
-                  </th>
-                  <th style={{ width: 240 }} onClick={() => sortByColumn(4, "Error")}>
-                    Error
-                  </th>
+                  <th style={{ width: 160 }} onClick={() => sortByColumn(0, "State")}>State</th>
+                  <th style={{ width: 180 }} onClick={() => sortByColumn(1, "VAT")}>VAT</th>
+                  <th style={{ width: 280 }} onClick={() => sortByColumn(2, "Name")}>Name</th>
+                  <th style={{ width: 280 }} onClick={() => sortByColumn(3, "Address")}>Address</th>
+                  <th style={{ width: 240 }} onClick={() => sortByColumn(4, "Error")}>Error</th>
+                  <th style={{ width: 240 }} onClick={() => sortByColumn(5, "Details")}>Details</th>
                 </tr>
               </thead>
 
@@ -1010,7 +851,7 @@ export default function App() {
                 {filteredRows.map((r, idx) => {
                   const st = stateLabel(r.state);
                   const cls = stateClass(r.state);
-                  const key = `${r.country_code || ""}:${r.vat_part || ""}` || `${r.vat_number || r.input || idx}`;
+                  const key = rowKey(r) || String(idx);
                   const isOpen = expandedKey === key;
                   const eta = r.next_retry_at ? formatEta(r.next_retry_at) : "";
 
@@ -1020,8 +861,7 @@ export default function App() {
                         <td>
                           <span className={`pill ${cls}`}>
                             <i aria-hidden="true" />
-                            {st}
-                            {cls === "retry" && eta ? ` (ETA ${eta})` : ""}
+                            {st}{cls === "retry" && eta ? ` (ETA ${eta})` : ""}
                           </span>
                         </td>
 
@@ -1032,37 +872,30 @@ export default function App() {
                         <td title={r.name || ""}>{r.name || ""}</td>
                         <td title={r.address || ""}>{r.address || ""}</td>
 
-                        <td title={humanError(r.error_code, r.error) || ""}>{humanError(r.error_code, r.error) || ""}</td>
+                        <td title={humanError(r.error_code, r.error) || ""}>
+                          {humanError(r.error_code, r.error) || ""}
+                        </td>
+
+                        <td title={r.details || ""}>{r.details || ""}</td>
                       </tr>
 
                       {isOpen && (
                         <tr>
-                          <td colSpan={5} className="rowDetails">
+                          <td colSpan={6} className="rowDetails">
                             <div className="kv">
-                              <span>Case</span>
-                              <b>{r.case_ref || "—"}</b>
-
-                              <span>Checked at</span>
-                              <b>{r.checked_at ? new Date(r.checked_at).toLocaleString("nl-NL") : "—"}</b>
-
-                              <span>Error code</span>
-                              <b>{r.error_code || "—"}</b>
-
-                              <span>Details</span>
-                              <b>{r.details || "—"}</b>
-
-                              <span>Attempt</span>
-                              <b>{typeof r.attempt === "number" ? String(r.attempt) : "—"}</b>
-
-                              <span>Next retry</span>
-                              <b>{r.next_retry_at ? new Date(r.next_retry_at).toLocaleString("nl-NL") : "—"}</b>
-
-                              <span>Format</span>
-                              <b>{r.format_ok === false ? `Bad (${r.format_reason})` : "OK"}</b>
+                              <span>Case</span><b>{r.case_ref || "—"}</b>
+                              <span>Checked at</span><b>{r.checked_at ? new Date(r.checked_at).toLocaleString("nl-NL") : "—"}</b>
+                              <span>Error code</span><b>{r.error_code || "—"}</b>
+                              <span>Attempt</span><b>{typeof r.attempt === "number" ? String(r.attempt) : "—"}</b>
+                              <span>Next retry</span><b>{r.next_retry_at ? new Date(r.next_retry_at).toLocaleString("nl-NL") : "—"}</b>
+                              <span>Format</span><b>{r.format_ok === false ? `Bad (${r.format_reason})` : "OK"}</b>
                             </div>
 
                             <div className="row" style={{ marginTop: 10 }}>
-                              <select value={r.tag || ""} onChange={(e) => updateNoteTag(r, r.note || "", e.target.value as any)}>
+                              <select
+                                value={r.tag || ""}
+                                onChange={(e) => updateNoteTag(r, r.note || "", e.target.value as any)}
+                              >
                                 <option value="">No tag</option>
                                 <option value="whitelist">Whitelist</option>
                                 <option value="blacklist">Blacklist</option>
@@ -1085,7 +918,7 @@ export default function App() {
 
                 {!filteredRows.length && (
                   <tr>
-                    <td colSpan={5} style={{ padding: 16, color: "var(--muted)" }}>
+                    <td colSpan={6} style={{ padding: 16, color: "var(--muted)" }}>
                       No results
                     </td>
                   </tr>
