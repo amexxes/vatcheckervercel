@@ -310,7 +310,7 @@ function featureToVatCc(feature: any): string {
         pollTimerRef.current = window.setInterval(() => {
           const id = currentFrJobIdRef.current;
           if (id) void pollFrJob(id);
-        }, 3000);
+        }, 1500);
       } else {
         setFrText("-");
       }
