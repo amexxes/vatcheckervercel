@@ -100,7 +100,21 @@ function computeCountryCountsFromInput(text: string): Record<string, number> {
   }
   return counts;
 }
+function countryFlagEmoji(ccRaw: string): string {
+  let cc = String(ccRaw || "").toUpperCase().trim();
 
+  // VIES codes → ISO2 voor flags
+  if (cc === "EL") cc = "GR";
+  if (cc === "XI") cc = "GB";
+
+  if (!/^[A-Z]{2}$/.test(cc)) return "";
+
+  const A = 0x1f1e6; // Regional indicator 'A'
+  return String.fromCodePoint(
+    A + cc.charCodeAt(0) - 65,
+    A + cc.charCodeAt(1) - 65
+  );
+}
 export default function App() {
   const [vatInput, setVatInput] = useState<string>("");
   const [caseRef, setCaseRef] = useState<string>("");
@@ -722,38 +736,73 @@ onEachFeature: (feature: any, lyr: any) => {
             <div className="callout" style={{ marginTop: 14 }}>
               <b>Tip</b>: Use the filter to search within results. Click a column header to sort. Click a row to expand details.
             </div>
-            {inputEntries.length > 0 && (
+{inputEntries.length > 0 && (
   <div
     style={{
       marginTop: 10,
       padding: 10,
-      border: "1px solid rgba(0,0,0,0.06)",
-      borderRadius: 12,
-      background: "rgba(0,0,0,0.02)",
+      borderRadius: 14,
+      border: "1px solid rgba(0,0,0,0.08)",
+      background: "rgba(255,255,255,0.18)", // transparant
+      backdropFilter: "blur(6px)",
+      WebkitBackdropFilter: "blur(6px)",
     }}
   >
-    <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
-      Input per land
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: "var(--muted)" }}>Input per land</div>
+      <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
+        {inputEntries.reduce((s, [, n]) => s + n, 0)} totaal
+      </div>
     </div>
 
-    <div style={{ maxHeight: 140, overflow: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
-      {inputEntries.map(([cc, n]) => (
-        <div key={cc} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div className="mono" style={{ width: 34 }}>{cc}</div>
+    <div style={{ maxHeight: 150, overflow: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+      {inputEntries.map(([cc, n]) => {
+        const pct = maxInputCount ? (n / maxInputCount) * 100 : 0;
+        const flag = countryFlagEmoji(cc);
 
-          <div style={{ flex: 1, height: 8, background: "rgba(0,0,0,0.08)", borderRadius: 999, overflow: "hidden" }}>
+        return (
+          <div
+            key={cc}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "78px 1fr 34px",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            <div className="mono" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span aria-hidden="true" style={{ fontSize: 14, width: 18, textAlign: "center" }}>
+                {flag || "🏳️"}
+              </span>
+              <span className="nowrap">{cc}</span>
+            </div>
+
             <div
+              title={`${cc}: ${n}`}
               style={{
-                width: maxInputCount ? `${(n / maxInputCount) * 100}%` : "0%",
-                height: "100%",
-                background: "#1f6aa5",
+                height: 10,
+                borderRadius: 999,
+                background: "rgba(0,0,0,0.10)",
+                overflow: "hidden",
               }}
-            />
-          </div>
+            >
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  borderRadius: 999,
+                  background:
+                    "linear-gradient(90deg, rgba(43,179,230,0.85), rgba(11,46,95,0.85))",
+                }}
+              />
+            </div>
 
-          <div className="mono" style={{ width: 28, textAlign: "right" }}>{n}</div>
-        </div>
-      ))}
+            <div className="mono" style={{ textAlign: "right" }}>
+              {n}
+            </div>
+          </div>
+        );
+      })}
     </div>
   </div>
 )}
