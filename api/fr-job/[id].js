@@ -6,9 +6,9 @@ const VIES_TIMEOUT_MS = Number(process.env.VIES_TIMEOUT_MS || 20000);
 const JOB_TTL_SEC = 6 * 60 * 60;
 
 // Retries
-const MAX_RETRIES = Number(process.env.MAX_RETRIES || 25); // max pogingen per VAT
+const MAX_RETRIES = Number(process.env.MAX_RETRIES || 25);
 const FIXED_RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 0); // 0 = exponential backoff
-const WORKER_LOCK_SEC = Number(process.env.WORKER_LOCK_SEC || 8); // voorkomt dubbele workers tegelijk
+const WORKER_LOCK_SEC = Number(process.env.WORKER_LOCK_SEC || 8);
 
 const RETRYABLE_CODES = new Set([
   "SERVICE_UNAVAILABLE",
@@ -141,7 +141,6 @@ async function viesCheck(p, requester) {
 function nextDelayMs(attempt) {
   if (FIXED_RETRY_DELAY_MS > 0) return FIXED_RETRY_DELAY_MS;
 
-  // exponential backoff met cap + jitter
   const base = 10_000; // 10s
   const max = 5 * 60_000; // 5m
   const ms = Math.min(max, base * Math.pow(2, Math.max(0, attempt - 1)));
@@ -167,8 +166,6 @@ async function readAllResults(resKey) {
 }
 
 async function acquireWorkerLock() {
-  // SET key value NX EX
-  // @vercel/kv ondersteunt set options nx/ex
   const ok = await kv.set("lock:vies-worker", "1", { nx: true, ex: WORKER_LOCK_SEC });
   return !!ok;
 }
@@ -181,12 +178,25 @@ async function releaseWorkerLock() {
   }
 }
 
-// Worker: leest uit queue:vies (list) en fallback uit queue:pending (hash)
-async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } = {}) {
+async function getMeta(metaKey) {
+  const meta = await kv.get(metaKey);
+  if (!meta) return null;
+  if (typeof meta === "string") {
+    try {
+      return JSON.parse(meta);
+    } catch {
+      return null;
+    }
+  }
+  return meta;
+}
+
+// Exported so Cron endpoint can reuse it.
+export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false, source = "poll" } = {}) {
   const locked = await acquireWorkerLock();
   if (!locked) {
-    logIf(debugEnabled, "[worker] lock busy -> skip");
-    return 0;
+    logIf(debugEnabled, `[worker:${source}] lock busy -> skip`);
+    return { processed: 0, locked: false };
   }
 
   const start = Date.now();
@@ -199,10 +209,10 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
 
   try {
     while (processed < maxTasks && Date.now() - start < maxMs) {
-      // 1) probeer list
+      // 1) list queue
       let raw = await kv.rpop("queue:vies");
 
-      // 2) fallback: hash queue
+      // 2) fallback hash queue
       if (!raw) {
         const keys = await kv.hkeys("queue:pending");
         if (!keys || keys.length === 0) break;
@@ -210,9 +220,7 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
         const k = keys[0];
         raw = await kv.hget("queue:pending", k);
 
-        // haal ‘m weg zodat we niet dubbel draaien
         await kv.hdel("queue:pending", k);
-
         if (!raw) continue;
       }
 
@@ -226,17 +234,16 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
 
       const now = Date.now();
       if (task.nextRunAt && task.nextRunAt > now) {
-        // nog niet aan de beurt -> terug in pending en stop (anders loop je hot)
         await kv.hset("queue:pending", { [task.key]: JSON.stringify(task) });
         await kv.expire("queue:pending", JOB_TTL_SEC);
-        logIf(debugEnabled, "[worker] not due -> requeue pending", maskKey(task.key));
+        logIf(debugEnabled, `[worker:${source}] not due -> requeue pending`, maskKey(task.key));
         break;
       }
 
       const metaKey = `job:${task.jobId}:meta`;
       const resKey = `job:${task.jobId}:results`;
 
-      const meta = await kv.get(metaKey);
+      const meta = await getMeta(metaKey);
       if (!meta) continue;
 
       let cur = null;
@@ -253,11 +260,11 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
         await kv.hset(resKey, { [task.key]: JSON.stringify(cur) });
       }
 
-      logIf(
-        debugEnabled,
-        "[worker] run",
-        { jobId: task.jobId, key: maskKey(task.key), attempt: Number(task.attempt || 0) }
-      );
+      logIf(debugEnabled, `[worker:${source}] run`, {
+        jobId: task.jobId,
+        key: maskKey(task.key),
+        attempt: Number(task.attempt || 0),
+      });
 
       const r = await viesCheck(task.p, requester);
 
@@ -282,7 +289,7 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
         meta.updated_at = Date.now();
         await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-        logIf(debugEnabled, "[worker] done", { key: maskKey(task.key), state: row.state });
+        logIf(debugEnabled, `[worker:${source}] done`, { key: maskKey(task.key), state: row.state });
 
         processed++;
         continue;
@@ -294,7 +301,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
       if (isRetryable(code, r.status)) {
         const attempt = Number(task.attempt || 0) + 1;
 
-        // max retries -> hard fail + done++
         if (attempt > MAX_RETRIES) {
           const row = {
             ...(cur || {}),
@@ -314,7 +320,7 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
           meta.updated_at = Date.now();
           await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-          logIf(debugEnabled, "[worker] exhausted", { key: maskKey(task.key), code, attempt });
+          logIf(debugEnabled, `[worker:${source}] exhausted`, { key: maskKey(task.key), code, attempt });
 
           processed++;
           continue;
@@ -340,13 +346,12 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
         meta.updated_at = Date.now();
         await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-        // requeue (pending is het meest stabiel in deze setup)
         task.attempt = attempt;
         task.nextRunAt = nextRetryAt;
         await kv.hset("queue:pending", { [task.key]: JSON.stringify(task) });
         await kv.expire("queue:pending", JOB_TTL_SEC);
 
-        logIf(debugEnabled, "[worker] retry", {
+        logIf(debugEnabled, `[worker:${source}] retry`, {
           key: maskKey(task.key),
           code,
           attempt,
@@ -357,7 +362,6 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
         continue;
       }
 
-      // non-retryable -> error + done++
       const row = {
         ...(cur || {}),
         state: "error",
@@ -375,12 +379,12 @@ async function workerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled = false } 
       meta.updated_at = Date.now();
       await kv.set(metaKey, meta, { ex: JOB_TTL_SEC });
 
-      logIf(debugEnabled, "[worker] error", { key: maskKey(task.key), code });
+      logIf(debugEnabled, `[worker:${source}] error`, { key: maskKey(task.key), code });
 
       processed++;
     }
 
-    return processed;
+    return { processed, locked: true };
   } finally {
     await releaseWorkerLock();
   }
@@ -400,7 +404,8 @@ export default async function handler(req, res) {
   };
 
   try {
-    debug.processed = await workerSlice({ maxTasks: 4, maxMs: 2500, debugEnabled: wantDebug });
+    const slice = await runWorkerSlice({ maxTasks: 4, maxMs: 2500, debugEnabled: wantDebug, source: "poll" });
+    debug.processed = slice.processed;
 
     try {
       debug.queue_vies_len = await kv.llen("queue:vies");
@@ -417,10 +422,9 @@ export default async function handler(req, res) {
     const metaKey = `job:${id}:meta`;
     const resKey = `job:${id}:results`;
 
-    const job = await kv.get(metaKey);
+    const job = await getMeta(metaKey);
     if (!job) return res.status(404).json({ error: "Not found", ...(wantDebug ? { debug } : {}) });
 
-    // cosmetisch: queued -> running als er werk is
     if (job.status === "queued" && (job.total || 0) > 0) {
       job.status = "running";
       job.updated_at = Date.now();
