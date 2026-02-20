@@ -4,6 +4,7 @@ import L from "leaflet";
 import ReactCountryFlag from "react-country-flag";
 import type { FrJobResponse, ValidateBatchResponse, VatRow } from "./types";
 import * as XLSX from "xlsx";
+import pptxgen from "pptxgenjs";
 
 type SortState = { colIndex: number | null; asc: boolean };
 type SavedRun = { id: string; ts: number; caseRef: string; input: string; results: VatRow[] };
@@ -480,7 +481,93 @@ export default function App() {
   useEffect(() => {
     setProgressText(`${stats.done}/${stats.total}`);
   }, [stats.done, stats.total]);
+function exportPptxInfographic() {
+  const pres = new pptxgen();
+  pres.layout = "LAYOUT_WIDE";
 
+  const slide = pres.addSlide();
+
+  const ts = new Date();
+  const stamp = ts.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+  // Title
+  slide.addText("VAT validation — infographic", {
+    x: 0.5, y: 0.3, w: 12.3, h: 0.5,
+    fontSize: 26, bold: true, color: "0B2E5F",
+  });
+
+  slide.addText(`Case: ${caseRef || "—"}  •  ${ts.toLocaleString("nl-NL")}`, {
+    x: 0.5, y: 0.85, w: 12.3, h: 0.3,
+    fontSize: 12, color: "6B7280",
+  });
+
+  // Stat boxes
+  const boxes = [
+    { label: "Total",   value: String(stats.total),   color: "0B2E5F" },
+    { label: "Valid",   value: String(stats.vOk),     color: "0A7A3D" },
+    { label: "Invalid", value: String(stats.vBad),    color: "B91C1C" },
+    { label: "Pending", value: String(stats.pending), color: "B45309" },
+    { label: "Error",   value: String(stats.err),     color: "B91C1C" },
+  ];
+
+  const startX = 0.5, gap = 0.15, totalW = 12.3, boxY = 1.25, boxH = 0.85;
+  const boxW = (totalW - gap * (boxes.length - 1)) / boxes.length;
+
+  boxes.forEach((b, i) => {
+    const x = startX + i * (boxW + gap);
+    slide.addShape(pres.ShapeType.roundRect, { // shapes via pres.ShapeType.* :contentReference[oaicite:4]{index=4}
+      x, y: boxY, w: boxW, h: boxH,
+      fill: { color: "F3F4F6" },
+      line: { color: "E5E7EB" },
+    });
+
+    slide.addText(b.label, {
+      x: x + 0.15, y: boxY + 0.10, w: boxW - 0.3, h: 0.25,
+      fontSize: 12, color: "6B7280",
+    });
+
+    slide.addText(b.value, {
+      x: x + 0.15, y: boxY + 0.35, w: boxW - 0.3, h: 0.45,
+      fontSize: 24, bold: true, color: b.color,
+    });
+  });
+
+  // Bar chart (top 12 input countries)
+  const top = inputEntries.slice(0, 12);
+  const max = top.length ? Math.max(...top.map(([, n]) => n)) : 0;
+
+  slide.addText("Input per land (top 12)", {
+    x: 0.5, y: 2.25, w: 12.3, h: 0.3,
+    fontSize: 14, bold: true, color: "0B2E5F",
+  });
+
+  const chartX = 0.5, chartY = 2.6, chartW = 12.3;
+  const labelW = 1.0, valueW = 0.8;
+  const barW = chartW - labelW - valueW - 0.6;
+  const barX = chartX + labelW + 0.2;
+  const valueX = barX + barW + 0.2;
+  const rowH = 0.32, rowGap = 0.07;
+
+  top.forEach(([cc, n], i) => {
+    const y = chartY + i * (rowH + rowGap);
+    slide.addText(cc, { x: chartX, y, w: labelW, h: rowH, fontSize: 12, bold: true, color: "111827" });
+
+    slide.addShape(pres.ShapeType.rect, {
+      x: barX, y: y + 0.07, w: barW, h: rowH - 0.14,
+      fill: { color: "E5E7EB" }, line: { color: "E5E7EB" },
+    });
+
+    const w = max ? (n / max) * barW : 0;
+    slide.addShape(pres.ShapeType.rect, {
+      x: barX, y: y + 0.07, w, h: rowH - 0.14,
+      fill: { color: "2BB3E6" }, line: { color: "2BB3E6" },
+    });
+
+    slide.addText(String(n), { x: valueX, y, w: valueW, h: rowH, fontSize: 12, align: "right", color: "111827" });
+  });
+
+  pres.writeFile({ fileName: `vat_infographic_${stamp}.pptx` });
+}
  function exportExcel() {
   const headers = [
     "case_ref",
@@ -743,6 +830,9 @@ export default function App() {
               />
 <button className="btn btn-secondary" onClick={exportExcel} disabled={!rows.length}>
   Export Excel
+</button>
+              <button className="btn btn-secondary" onClick={exportPptxInfographic} disabled={!rows.length}>
+  Export PPTX (infographic)
 </button>
               <button className="btn btn-secondary" onClick={saveRun} disabled={!rows.length}>
                 Save run
