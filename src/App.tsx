@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import type { FrJobResponse, ValidateBatchResponse, VatRow } from "./types";
+import ReactCountryFlag from "react-country-flag";
 
 type SortState = { colIndex: number | null; asc: boolean };
 type SavedRun = { id: string; ts: number; caseRef: string; input: string; results: VatRow[] };
@@ -114,6 +115,12 @@ function countryFlagEmoji(ccRaw: string): string {
     A + cc.charCodeAt(0) - 65,
     A + cc.charCodeAt(1) - 65
   );
+}
+function vatCcToIso2ForFlag(ccRaw: string): string {
+  let cc = String(ccRaw || "").toUpperCase().trim();
+  if (cc === "EL") cc = "GR"; // VIES gebruikt EL, vlag-lib gebruikt GR
+  if (cc === "XI") cc = "GB"; // NI heeft geen eigen ISO2 vlag
+  return cc;
 }
 export default function App() {
   const [vatInput, setVatInput] = useState<string>("");
@@ -743,10 +750,71 @@ onEachFeature: (feature: any, lyr: any) => {
       padding: 10,
       borderRadius: 14,
       border: "1px solid rgba(0,0,0,0.08)",
-      background: "rgba(255,255,255,0.18)", // transparant
+      background: "rgba(255,255,255,0.18)",
       backdropFilter: "blur(6px)",
       WebkitBackdropFilter: "blur(6px)",
     }}
+  >
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: "var(--muted)" }}>Input per land</div>
+      <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
+        {inputEntries.reduce((s, [, n]) => s + n, 0)} totaal
+      </div>
+    </div>
+
+    <div style={{ maxHeight: 150, overflow: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+      {inputEntries.map(([cc, n]) => {
+        const pct = maxInputCount ? (n / maxInputCount) * 100 : 0;
+        const iso2 = vatCcToIso2ForFlag(cc);
+
+        return (
+          <div
+            key={cc}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "88px 1fr 34px",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ReactCountryFlag
+                countryCode={iso2}
+                svg
+                style={{ width: "18px", height: "14px", borderRadius: 3 }}
+                title={cc}
+              />
+              <span className="mono nowrap">{cc}</span>
+            </div>
+
+            <div
+              title={`${cc}: ${n}`}
+              style={{
+                height: 10,
+                borderRadius: 999,
+                background: "rgba(0,0,0,0.10)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  borderRadius: 999,
+                  background: "linear-gradient(90deg, rgba(43,179,230,0.85), rgba(11,46,95,0.85))",
+                }}
+              />
+            </div>
+
+            <div className="mono" style={{ textAlign: "right" }}>
+              {n}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+)}
   >
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
       <div style={{ fontSize: 12, color: "var(--muted)" }}>Input per land</div>
