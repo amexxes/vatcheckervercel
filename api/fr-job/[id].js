@@ -6,7 +6,7 @@ const VIES_TIMEOUT_MS = Number(process.env.VIES_TIMEOUT_MS || 20000);
 const JOB_TTL_SEC = 6 * 60 * 60;
 
 // Retries
-const MAX_RETRIES = Number(process.env.MAX_RETRIES || 25);
+const MAX_RETRIES = Number(process.env.MAX_RETRIES || 55);
 const FIXED_RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 0); // 0 = exponential backoff
 const WORKER_LOCK_SEC = Number(process.env.WORKER_LOCK_SEC || 8);
 
