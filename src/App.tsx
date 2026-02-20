@@ -57,6 +57,13 @@ function normalizeLine(s: string): string {
     .toUpperCase();
 }
 
+function normalizeVatCandidate(v: string): string {
+  let n = normalizeLine(v);
+  // GR -> EL (VIES gebruikt EL)
+  if (n.startsWith("GR")) n = "EL" + n.slice(2);
+  return n;
+}
+
 function stateClass(state?: string): string {
   const s = String(state || "").toLowerCase();
   if (["valid", "invalid", "retry", "queued", "processing", "error"].includes(s)) return s;
@@ -231,6 +238,19 @@ export default function App() {
 
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
+  // Import / cancel / debug
+  const importFileRef = useRef<HTMLInputElement | null>(null);
+  const validateAbortRef = useRef<AbortController | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
+  const [activeFrJobId, setActiveFrJobId] = useState<string | null>(null);
+
+  const [frDebugOn, setFrDebugOn] = useState(false);
+  const [frDebug, setFrDebug] = useState<any | null>(null);
+  const frDebugOnRef = useRef(false);
+  useEffect(() => {
+    frDebugOnRef.current = frDebugOn;
+  }, [frDebugOn]);
+
   // (feature blijft bestaan; UI “Saved runs” panel is verwijderd)
   const [savedRuns, setSavedRuns] = useState<SavedRun[]>(() => {
     try {
@@ -333,12 +353,55 @@ export default function App() {
     return Math.round((stats.done / stats.total) * 100);
   }, [stats.total, stats.done]);
 
+  const precheck = useMemo(() => {
+    const rawLines = vatInput
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const seen = new Set<string>();
+    let duplicates = 0;
+    let badFormat = 0;
+    const badExamples: string[] = [];
+
+    for (const line of rawLines) {
+      const n = normalizeVatCandidate(line);
+      if (!n) continue;
+
+      if (seen.has(n)) {
+        duplicates++;
+        continue;
+      }
+      seen.add(n);
+
+      const fmt = validateFormat(n);
+      if (!fmt.ok) {
+        badFormat++;
+        if (badExamples.length < 5) badExamples.push(line);
+      }
+    }
+
+    return { totalLines: rawLines.length, unique: seen.size, duplicates, badFormat, badExamples };
+  }, [vatInput]);
+
   function stopPolling() {
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
+
     if (pollTimerRef.current) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
     currentFrJobIdRef.current = null;
+    setActiveFrJobId(null);
+    setFrDebug(null);
+  }
+
+  function onCancel() {
+    validateAbortRef.current?.abort();
+    validateAbortRef.current = null;
+    stopPolling();
+    setLoading(false);
   }
 
   function enrichRow(r: VatRow): VatRow {
@@ -357,11 +420,22 @@ export default function App() {
 
   async function pollFrJob(jobId: string) {
     try {
-      const resp = await fetch(`/api/fr-job/${encodeURIComponent(jobId)}`);
+      pollAbortRef.current?.abort();
+      const controller = new AbortController();
+      pollAbortRef.current = controller;
+
+      const url = `/api/fr-job/${encodeURIComponent(jobId)}${frDebugOnRef.current ? "?debug=1" : ""}`;
+      const resp = await fetch(url, { signal: controller.signal });
       if (!resp.ok) return;
-      const data = (await resp.json()) as FrJobResponse;
+      const data = (await resp.json()) as any as FrJobResponse;
 
       setFrText(`${data.job.done}/${data.job.total} (${data.job.status})`);
+
+      if (frDebugOnRef.current) {
+        setFrDebug((data as any).debug ?? (data as any).worker ?? null);
+      } else {
+        setFrDebug(null);
+      }
 
       setRows((prev) => {
         const map = new Map<string, VatRow>();
@@ -370,9 +444,9 @@ export default function App() {
           map.set(k, r);
         }
 
-        for (const r of data.results || []) {
-          const k = `${r.country_code || ""}:${r.vat_part || ""}` || r.vat_number || r.input || crypto.randomUUID();
-          const merged = { ...map.get(k), ...r };
+        for (const r of (data as any).results || []) {
+          const k = `${(r as any).country_code || ""}:${(r as any).vat_part || ""}` || (r as any).vat_number || (r as any).input || crypto.randomUUID();
+          const merged = { ...map.get(k), ...(r as any) };
           map.set(k, enrichRow(merged));
         }
 
@@ -381,8 +455,9 @@ export default function App() {
 
       setLastUpdate(new Date().toLocaleString("nl-NL"));
 
-      if (data.job.status === "completed") stopPolling();
-    } catch {
+      if ((data as any).job?.status === "completed") stopPolling();
+    } catch (e: any) {
+      if (e?.name === "AbortError") return;
       // ignore
     }
   }
@@ -397,6 +472,7 @@ export default function App() {
     setSortLabel("");
     setLoading(true);
     setDuplicatesIgnored(0);
+    setActiveFrJobId(null);
 
     const lines = vatInput.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     if (!lines.length) {
@@ -404,11 +480,16 @@ export default function App() {
       return;
     }
 
+    validateAbortRef.current?.abort();
+    const controller = new AbortController();
+    validateAbortRef.current = controller;
+
     try {
       const resp = await fetch("/api/validate-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ vat_numbers: lines, case_ref: caseRef }),
+        signal: controller.signal,
       });
 
       const data = (await resp.json()) as ValidateBatchResponse & any;
@@ -423,6 +504,8 @@ export default function App() {
 
       if (data.fr_job_id) {
         currentFrJobIdRef.current = data.fr_job_id;
+        setActiveFrJobId(data.fr_job_id);
+
         await pollFrJob(data.fr_job_id);
 
         pollTimerRef.current = window.setInterval(() => {
@@ -432,13 +515,20 @@ export default function App() {
       } else {
         setFrText("-");
       }
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        // cancelled
+      } else {
+        // ignore
+      }
     } finally {
+      validateAbortRef.current = null;
       setLoading(false);
     }
   }
 
   function onClear() {
-    stopPolling();
+    onCancel();
     setVatInput("");
     setCaseRef("");
     setFilter("");
@@ -451,6 +541,8 @@ export default function App() {
     setDuplicatesIgnored(0);
     setViesStatus([]);
     setExpandedKey(null);
+    setFrDebugOn(false);
+    setFrDebug(null);
   }
 
   function getCellText(r: VatRow, colIndex: number): string {
@@ -481,131 +573,233 @@ export default function App() {
   useEffect(() => {
     setProgressText(`${stats.done}/${stats.total}`);
   }, [stats.done, stats.total]);
-function exportPptxInfographic() {
-  const pres = new pptxgen();
-  pres.layout = "LAYOUT_WIDE";
 
-  const slide = pres.addSlide();
+  function openImportDialog() {
+    importFileRef.current?.click();
+  }
 
-  const ts = new Date();
-  const stamp = ts.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  async function importVatFile(file: File) {
+    const name = (file.name || "").toLowerCase();
+    const isCsvLike = name.endsWith(".csv") || name.endsWith(".txt");
 
-  // Title
-  slide.addText("VAT validation — infographic", {
-    x: 0.5, y: 0.3, w: 12.3, h: 0.5,
-    fontSize: 26, bold: true, color: "0B2E5F",
-  });
+    let candidates: string[] = [];
 
-  slide.addText(`Case: ${caseRef || "—"}  •  ${ts.toLocaleString("nl-NL")}`, {
-    x: 0.5, y: 0.85, w: 12.3, h: 0.3,
-    fontSize: 12, color: "6B7280",
-  });
+    if (isCsvLike) {
+      const text = await file.text();
+      candidates = text
+        .split(/\r?\n|,|;|\t/)
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
+    } else {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const firstSheetName = wb.SheetNames?.[0];
+      const ws = firstSheetName ? wb.Sheets[firstSheetName] : null;
+      if (!ws) return;
 
-  // Stat boxes
-  const boxes = [
-    { label: "Total",   value: String(stats.total),   color: "0B2E5F" },
-    { label: "Valid",   value: String(stats.vOk),     color: "0A7A3D" },
-    { label: "Invalid", value: String(stats.vBad),    color: "B91C1C" },
-    { label: "Pending", value: String(stats.pending), color: "B45309" },
-    { label: "Error",   value: String(stats.err),     color: "B91C1C" },
-  ];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" }) as any[][];
+      candidates = aoa
+        .flat()
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
+    }
 
-  const startX = 0.5, gap = 0.15, totalW = 12.3, boxY = 1.25, boxH = 0.85;
-  const boxW = (totalW - gap * (boxes.length - 1)) / boxes.length;
+    const seen = new Set<string>();
+    const out: string[] = [];
 
-  boxes.forEach((b, i) => {
-    const x = startX + i * (boxW + gap);
-    slide.addShape(pres.ShapeType.roundRect, { // shapes via pres.ShapeType.* :contentReference[oaicite:4]{index=4}
-      x, y: boxY, w: boxW, h: boxH,
-      fill: { color: "F3F4F6" },
-      line: { color: "E5E7EB" },
+    for (const c of candidates) {
+      const n = normalizeVatCandidate(c);
+      if (!n) continue;
+
+      const fmt = validateFormat(n);
+      if (!fmt.ok) continue;
+
+      if (seen.has(n)) continue;
+      seen.add(n);
+      out.push(n);
+    }
+
+    if (out.length) {
+      setVatInput(out.join("\n"));
+      setExpandedKey(null);
+      setFilter("");
+    }
+  }
+
+  function onImportFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    void importVatFile(f);
+  }
+
+  function exportPptxInfographic() {
+    const pres = new pptxgen();
+    pres.layout = "LAYOUT_WIDE";
+
+    const slide = pres.addSlide();
+
+    const ts = new Date();
+    const stamp = ts.toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+    slide.addText("VAT validation — infographic", {
+      x: 0.5,
+      y: 0.3,
+      w: 12.3,
+      h: 0.5,
+      fontSize: 26,
+      bold: true,
+      color: "0B2E5F",
     });
 
-    slide.addText(b.label, {
-      x: x + 0.15, y: boxY + 0.10, w: boxW - 0.3, h: 0.25,
-      fontSize: 12, color: "6B7280",
+    slide.addText(`Case: ${caseRef || "—"}  •  ${ts.toLocaleString("nl-NL")}`, {
+      x: 0.5,
+      y: 0.85,
+      w: 12.3,
+      h: 0.3,
+      fontSize: 12,
+      color: "6B7280",
     });
 
-    slide.addText(b.value, {
-      x: x + 0.15, y: boxY + 0.35, w: boxW - 0.3, h: 0.45,
-      fontSize: 24, bold: true, color: b.color,
+    const boxes = [
+      { label: "Total", value: String(stats.total), color: "0B2E5F" },
+      { label: "Valid", value: String(stats.vOk), color: "0A7A3D" },
+      { label: "Invalid", value: String(stats.vBad), color: "B91C1C" },
+      { label: "Pending", value: String(stats.pending), color: "B45309" },
+      { label: "Error", value: String(stats.err), color: "B91C1C" },
+    ];
+
+    const startX = 0.5,
+      gap = 0.15,
+      totalW = 12.3,
+      boxY = 1.25,
+      boxH = 0.85;
+    const boxW = (totalW - gap * (boxes.length - 1)) / boxes.length;
+
+    boxes.forEach((b, i) => {
+      const x = startX + i * (boxW + gap);
+
+      slide.addShape(pres.ShapeType.roundRect, {
+        x,
+        y: boxY,
+        w: boxW,
+        h: boxH,
+        fill: { color: "F3F4F6" },
+        line: { color: "E5E7EB" },
+      });
+
+      slide.addText(b.label, {
+        x: x + 0.15,
+        y: boxY + 0.1,
+        w: boxW - 0.3,
+        h: 0.25,
+        fontSize: 12,
+        color: "6B7280",
+      });
+
+      slide.addText(b.value, {
+        x: x + 0.15,
+        y: boxY + 0.35,
+        w: boxW - 0.3,
+        h: 0.45,
+        fontSize: 24,
+        bold: true,
+        color: b.color,
+      });
     });
-  });
 
-  // Bar chart (top 12 input countries)
-  const top = inputEntries.slice(0, 12);
-  const max = top.length ? Math.max(...top.map(([, n]) => n)) : 0;
+    const top = inputEntries.slice(0, 12);
+    const max = top.length ? Math.max(...top.map(([, n]) => n)) : 0;
 
-  slide.addText("Input per land (top 12)", {
-    x: 0.5, y: 2.25, w: 12.3, h: 0.3,
-    fontSize: 14, bold: true, color: "0B2E5F",
-  });
-
-  const chartX = 0.5, chartY = 2.6, chartW = 12.3;
-  const labelW = 1.0, valueW = 0.8;
-  const barW = chartW - labelW - valueW - 0.6;
-  const barX = chartX + labelW + 0.2;
-  const valueX = barX + barW + 0.2;
-  const rowH = 0.32, rowGap = 0.07;
-
-  top.forEach(([cc, n], i) => {
-    const y = chartY + i * (rowH + rowGap);
-    slide.addText(cc, { x: chartX, y, w: labelW, h: rowH, fontSize: 12, bold: true, color: "111827" });
-
-    slide.addShape(pres.ShapeType.rect, {
-      x: barX, y: y + 0.07, w: barW, h: rowH - 0.14,
-      fill: { color: "E5E7EB" }, line: { color: "E5E7EB" },
+    slide.addText("Input per land (top 12)", {
+      x: 0.5,
+      y: 2.25,
+      w: 12.3,
+      h: 0.3,
+      fontSize: 14,
+      bold: true,
+      color: "0B2E5F",
     });
 
-    const w = max ? (n / max) * barW : 0;
-    slide.addShape(pres.ShapeType.rect, {
-      x: barX, y: y + 0.07, w, h: rowH - 0.14,
-      fill: { color: "2BB3E6" }, line: { color: "2BB3E6" },
+    const chartX = 0.5,
+      chartY = 2.6,
+      chartW = 12.3;
+    const labelW = 1.0,
+      valueW = 0.8;
+    const barW = chartW - labelW - valueW - 0.6;
+    const barX = chartX + labelW + 0.2;
+    const valueX = barX + barW + 0.2;
+    const rowH = 0.32,
+      rowGap = 0.07;
+
+    top.forEach(([cc, n], i) => {
+      const y = chartY + i * (rowH + rowGap);
+
+      slide.addText(cc, { x: chartX, y, w: labelW, h: rowH, fontSize: 12, bold: true, color: "111827" });
+
+      slide.addShape(pres.ShapeType.rect, {
+        x: barX,
+        y: y + 0.07,
+        w: barW,
+        h: rowH - 0.14,
+        fill: { color: "E5E7EB" },
+        line: { color: "E5E7EB" },
+      });
+
+      const w = max ? (n / max) * barW : 0;
+      slide.addShape(pres.ShapeType.rect, {
+        x: barX,
+        y: y + 0.07,
+        w,
+        h: rowH - 0.14,
+        fill: { color: "2BB3E6" },
+        line: { color: "2BB3E6" },
+      });
+
+      slide.addText(String(n), { x: valueX, y, w: valueW, h: rowH, fontSize: 12, align: "right", color: "111827" });
     });
 
-    slide.addText(String(n), { x: valueX, y, w: valueW, h: rowH, fontSize: 12, align: "right", color: "111827" });
-  });
+    pres.writeFile({ fileName: `vat_infographic_${stamp}.pptx` });
+  }
 
-  pres.writeFile({ fileName: `vat_infographic_${stamp}.pptx` });
-}
- function exportExcel() {
-  const headers = [
-    "case_ref",
-    "input",
-    "vat_number",
-    "country_code",
-    "valid",
-    "state",
-    "name",
-    "address",
-    "error_code",
-    "error",
-    "attempt",
-    "next_retry_at",
-    "note",
-    "tag",
-  ];
+  function exportExcel() {
+    const headers = [
+      "case_ref",
+      "input",
+      "vat_number",
+      "country_code",
+      "valid",
+      "state",
+      "name",
+      "address",
+      "error_code",
+      "error",
+      "attempt",
+      "next_retry_at",
+      "note",
+      "tag",
+      "checked_at",
+    ];
 
-  // Alles als tekst (voorkomt Excel auto-formatting issues)
-  const aoa: string[][] = [
-    headers,
-    ...rows.map((r) =>
-      headers.map((h) => {
-        const v = (r as any)[h];
-        return v === null || v === undefined ? "" : String(v);
-      })
-    ),
-  ];
+    const aoa: string[][] = [
+      headers,
+      ...rows.map((r) =>
+        headers.map((h) => {
+          const v = (r as any)[h];
+          return v === null || v === undefined ? "" : String(v);
+        })
+      ),
+    ];
 
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }));
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }));
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Results");
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Results");
 
-  const filename = `vat_results_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`;
-  XLSX.writeFile(wb, filename);
-}
+    const filename = `vat_results_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`;
+    XLSX.writeFile(wb, filename);
+  }
 
   function saveRun() {
     const id = crypto.randomUUID();
@@ -820,22 +1014,62 @@ function exportPptxInfographic() {
               Paste VAT numbers (1 per line). Non-FR is checked realtime. FR is queued (retry/backoff) and will update via polling.
             </p>
 
-<div className="row inputActionsRow">
-  <input
-    type="text"
-    value={caseRef}
-    onChange={(e) => setCaseRef(e.target.value)}
-    placeholder="Client / Case (optioneel)"
-    style={{ flex: 1, minWidth: 220 }}
-  />
-  <button className="btn btn-secondary btn-export btn-excel" onClick={exportExcel} disabled={!rows.length}>
-    Export Excel
-  </button>
-  <button className="btn btn-secondary btn-export btn-pptx" onClick={exportPptxInfographic} disabled={!rows.length}>
-    Export PPTX
-  </button>
+            <div className="row inputActionsRow">
+              <input
+                type="text"
+                value={caseRef}
+                onChange={(e) => setCaseRef(e.target.value)}
+                placeholder="Client / Case (optioneel)"
+                style={{ flex: 1, minWidth: 220 }}
+              />
 
+              <button className="btn btn-secondary" onClick={openImportDialog} disabled={loading}>
+                Import XLSX/CSV
+              </button>
+
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv,.txt"
+                style={{ display: "none" }}
+                onChange={onImportFileChange}
+              />
+
+              <button className="btn btn-secondary btn-export btn-excel" onClick={exportExcel} disabled={!rows.length}>
+                Export Excel
+              </button>
+              <button className="btn btn-secondary btn-export btn-pptx" onClick={exportPptxInfographic} disabled={!rows.length}>
+                Export PPTX
+              </button>
             </div>
+
+            <div className="callout" style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={frDebugOn}
+                  onChange={(e) => {
+                    setFrDebugOn(e.target.checked);
+                    setFrDebug(null);
+                    if (activeFrJobId) void pollFrJob(activeFrJobId);
+                  }}
+                  disabled={!activeFrJobId}
+                />
+                <b>FR debug</b>
+              </label>
+              {!activeFrJobId && <span style={{ color: "var(--muted)", fontSize: 12 }}>start een FR job om debug te zien</span>}
+            </div>
+
+            {frDebugOn && frDebug && (
+              <details className="callout" style={{ marginTop: 10 }}>
+                <summary>
+                  <b>Debug info</b>
+                </summary>
+                <pre className="mono" style={{ fontSize: 12, whiteSpace: "pre-wrap", marginTop: 8 }}>
+                  {JSON.stringify(frDebug, null, 2)}
+                </pre>
+              </details>
+            )}
 
             {duplicatesIgnored > 0 && (
               <div className="callout" style={{ marginTop: 10 }}>
@@ -849,12 +1083,30 @@ function exportPptxInfographic() {
               placeholder={`NL123456789B01\nDE123456789\nFR12345678901\n...`}
             />
 
+            <div className="callout" style={{ marginTop: 10 }}>
+              <b>Voorcontrole</b>: {precheck.unique} uniek / {precheck.totalLines} regels · {precheck.duplicates} duplicaten ·{" "}
+              {precheck.badFormat} format issues
+              {precheck.badExamples.length > 0 && (
+                <details style={{ marginTop: 8 }}>
+                  <summary>Voorbeelden</summary>
+                  <div className="mono" style={{ fontSize: 12, whiteSpace: "pre-wrap", marginTop: 6 }}>
+                    {precheck.badExamples.join("\n")}
+                  </div>
+                </details>
+              )}
+            </div>
+
             <div className="row">
               <button className="btn btn-primary" onClick={onValidate} disabled={loading}>
                 {loading ? "Validating…" : "Validate"}
               </button>
+
               <button className="btn btn-secondary" onClick={onClear} disabled={loading}>
                 Clear
+              </button>
+
+              <button className="btn btn-secondary" onClick={onCancel} disabled={!loading && !activeFrJobId}>
+                Cancel
               </button>
 
               <div style={{ flex: 1 }} />
@@ -1100,7 +1352,9 @@ function exportPptxInfographic() {
                                   const key2 = `${r.country_code || ""}:${r.vat_part || ""}`;
                                   const nextTag = e.target.value as any;
                                   setNotes((prev) => ({ ...prev, [key2]: { note: r.note || "", tag: nextTag } }));
-                                  setRows((prev) => prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, tag: nextTag } : x)));
+                                  setRows((prev) =>
+                                    prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, tag: nextTag } : x))
+                                  );
                                 }}
                               >
                                 <option value="">No tag</option>
@@ -1115,7 +1369,9 @@ function exportPptxInfographic() {
                                   const key2 = `${r.country_code || ""}:${r.vat_part || ""}`;
                                   const nextNote = e.target.value;
                                   setNotes((prev) => ({ ...prev, [key2]: { note: nextNote, tag: (r.tag as any) || "" } }));
-                                  setRows((prev) => prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, note: nextNote } : x)));
+                                  setRows((prev) =>
+                                    prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, note: nextNote } : x))
+                                  );
                                 }}
                                 placeholder="Note (optioneel)"
                                 style={{ flex: 1, minWidth: 260 }}
