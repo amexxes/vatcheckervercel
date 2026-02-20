@@ -371,3 +371,9 @@ tbody tr:hover td{ background: rgba(11,46,95,.02); }
   box-shadow: none;
   filter: none;
 }
+
+/* Extra ruimte tussen actions (case/export) en textarea */
+.inputActionsRow {
+  margin-top: 6px;
+  margin-bottom: 14px;
+}
