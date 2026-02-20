@@ -832,7 +832,7 @@ function exportPptxInfographic() {
   Export Excel
 </button>
               <button className="btn btn-secondary" onClick={exportPptxInfographic} disabled={!rows.length}>
-  Export PPTX (infographic)
+  Export PPTX
 </button>
               <button className="btn btn-secondary" onClick={saveRun} disabled={!rows.length}>
                 Save run
