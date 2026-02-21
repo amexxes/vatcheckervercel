@@ -69,7 +69,7 @@ type RowState = "valid" | "invalid" | "retry" | "queued" | "processing" | "error
 function normalizeTsMs(ts: any): number | undefined {
   const n = typeof ts === "number" ? ts : Number(ts);
   if (!Number.isFinite(n) || n <= 0) return undefined;
-  // Heuristic: seconds timestamps are ~1e9..1e10; ms timestamps are ~1e12..1e13
+  // seconds -> ms (heuristic)
   if (n < 1_000_000_000_000) return n * 1000;
   return n;
 }
@@ -84,30 +84,6 @@ function rowKeyStable(r: Partial<VatRow>, fallbackIdx?: number): string {
   if (input) return `in:${normalizeVatCandidate(input)}`;
   if (cc || part) return `cc:${cc}:${part}`;
   return `idx:${fallbackIdx ?? 0}`;
-}
-
-function displayState(r: VatRow): RowState {
-  const raw = String((r as any).state || "").toLowerCase();
-
-  if (raw === "error") return "error";
-
-  const v = (r as any).valid;
-  if (typeof v === "boolean") return v ? "valid" : "invalid";
-
-  const hasResult = Boolean(String((r as any).name || "").trim() || String((r as any).address || "").trim());
-  if (raw === "retry" && hasResult) {
-    // UI-fix: als er al een resultaat zichtbaar is maar state blijft retry, toon geen retry meer
-    return "valid";
-  }
-
-  const nra = normalizeTsMs((r as any).next_retry_at);
-  if (raw === "retry" && (!nra || nra <= Date.now())) {
-    // voorkom "retry (ETA 0s)" bij missing/past/seconds timestamps
-    return "queued";
-  }
-
-  if (raw === "valid" || raw === "invalid" || raw === "retry" || raw === "queued" || raw === "processing") return raw as RowState;
-  return "queued";
 }
 
 function stateClass(state?: string): string {
@@ -135,6 +111,56 @@ function formatEta(ts?: number) {
   return `${m}m`;
 }
 
+// --- STRICT VAT FORMAT (voor precheck + row format_ok) ---
+const VAT_PATTERNS: Record<string, RegExp> = {
+  AT: /^U\d{8}$/, // ATU12345678
+  BE: /^\d{10}$/, // BE0123456789
+  BG: /^\d{9,10}$/,
+  CY: /^\d{8}[A-Z]$/,
+  CZ: /^\d{8,10}$/,
+  DE: /^\d{9}$/,
+  DK: /^\d{8}$/,
+  EE: /^\d{9}$/,
+  EL: /^\d{9}$/,
+  ES: /^[A-Z0-9]{9}$/, // tolerant, maar lengte klopt
+  FI: /^\d{8}$/,
+  FR: /^[0-9A-Z]{2}\d{9}$/, // FRXX123456789
+  HR: /^\d{11}$/,
+  HU: /^\d{8}$/,
+  IE: /^[0-9A-Z]{8,9}$/, // tolerant (IE formats variëren)
+  IT: /^\d{11}$/,
+  LT: /^(?:\d{9}|\d{12})$/,
+  LU: /^\d{8}$/,
+  LV: /^\d{11}$/,
+  MT: /^\d{8}$/,
+  NL: /^\d{9}B\d{2}$/, // NL123456789B01
+  PL: /^\d{10}$/,
+  PT: /^\d{9}$/,
+  RO: /^\d{2,10}$/,
+  SE: /^\d{12}$/,
+  SI: /^\d{8}$/,
+  SK: /^\d{10}$/,
+  XI: /^(?:\d{9}|\d{12}|GD\d{3}|HA\d{3})$/, // NI/UK-style
+};
+
+function validateFormatStrict(vatNumberWithPrefix: string) {
+  const v = normalizeVatCandidate(vatNumberWithPrefix);
+  if (v.length < 3) return { ok: false, reason: "Too short" };
+
+  const cc = v.slice(0, 2);
+  if (!/^[A-Z]{2}$/.test(cc)) return { ok: false, reason: "Missing country prefix" };
+
+  const rest = v.slice(2);
+  if (!rest) return { ok: false, reason: "Missing VAT digits" };
+  if (!/^[A-Z0-9]+$/.test(rest)) return { ok: false, reason: "Invalid characters" };
+
+  const re = VAT_PATTERNS[cc];
+  if (re && !re.test(rest)) return { ok: false, reason: `Invalid format for ${cc}` };
+
+  return { ok: true, reason: "" };
+}
+
+// (oude, permissieve check blijft bestaan voor import-filter e.d.)
 function validateFormat(vatNumberWithPrefix: string) {
   const v = normalizeLine(vatNumberWithPrefix);
   if (v.length < 3) return { ok: false, reason: "Too short" };
@@ -144,6 +170,58 @@ function validateFormat(vatNumberWithPrefix: string) {
   if (!rest) return { ok: false, reason: "Missing VAT digits" };
   if (!/^[A-Z0-9]+$/.test(rest)) return { ok: false, reason: "Invalid characters" };
   return { ok: true, reason: "" };
+}
+
+// Retryable error heuristics (voor UI-state; backend moet dit óók goed zetten)
+function isRetryableError(codeOrError?: string, details?: string) {
+  const c = String(codeOrError || "").trim().toUpperCase();
+  const d = String(details || "").toLowerCase();
+
+  if (
+    c === "NETWORK_ERROR" ||
+    c === "TIMEOUT" ||
+    c === "SERVICE_UNAVAILABLE" ||
+    c === "GLOBAL_MAX_CONCURRENT_REQ" ||
+    c === "MS_MAX_CONCURRENT_REQ" ||
+    c === "MS_UNAVAILABLE"
+  ) {
+    return true;
+  }
+
+  // "This operation was aborted" / AbortError-achtige teksten
+  if (d.includes("abort") || d.includes("aborted") || d.includes("timeout")) return true;
+
+  return false;
+}
+
+/**
+ * UI displayState:
+ * - valid boolean => valid/invalid (overrulet raw state)
+ * - raw processing/queued + retryable error => retry (fix: blijft hangen op processing/queued met MS_MAX_CONCURRENT_REQ/NETWORK_ERROR)
+ * - raw retry + name/address al gevuld + geen error => valid (fix: retry terwijl resultaat zichtbaar is)
+ */
+function displayState(r: VatRow): RowState {
+  const raw = String((r as any).state || "").toLowerCase();
+  const v = (r as any).valid;
+
+  if (raw === "error") return "error";
+  if (typeof v === "boolean") return v ? "valid" : "invalid";
+
+  const errorCode = String((r as any).error_code || "").trim();
+  const errorText = String((r as any).error || "").trim();
+  const details = String((r as any).details || "").trim();
+
+  const retryable = isRetryableError(errorCode || errorText, details);
+
+  // Fix voor: queued/processing blijft hangen met retryable code (MS_MAX_CONCURRENT_REQ / NETWORK_ERROR / aborted)
+  if ((raw === "queued" || raw === "processing") && retryable) return "retry";
+
+  // Fix voor: retry maar resultaat al zichtbaar
+  const hasResult = Boolean(String((r as any).name || "").trim() || String((r as any).address || "").trim());
+  if (raw === "retry" && hasResult && !errorCode && !errorText) return "valid";
+
+  if (raw === "valid" || raw === "invalid" || raw === "retry" || raw === "queued" || raw === "processing") return raw as RowState;
+  return "queued";
 }
 
 function computeCountryCountsFromInput(text: string): Record<string, number> {
@@ -399,6 +477,7 @@ export default function App() {
     return Math.round((stats.done / stats.total) * 100);
   }, [stats.total, stats.done]);
 
+  // --- Precheck: nu strict format ---
   const precheck = useMemo(() => {
     const rawLines = vatInput
       .split(/\r?\n/)
@@ -420,10 +499,10 @@ export default function App() {
       }
       seen.add(n);
 
-      const fmt = validateFormat(n);
+      const fmt = validateFormatStrict(n);
       if (!fmt.ok) {
         badFormat++;
-        if (badExamples.length < 5) badExamples.push(line);
+        if (badExamples.length < 5) badExamples.push(`${line} — ${fmt.reason}`);
       }
     }
 
@@ -452,7 +531,7 @@ export default function App() {
 
   function enrichRow(r: VatRow): VatRow {
     const key = `${(r as any).country_code || ""}:${(r as any).vat_part || ""}`;
-    const fmt = validateFormat((r as any).vat_number || (r as any).input || "");
+    const fmt = validateFormatStrict((r as any).vat_number || (r as any).input || "");
     const user = notes[key] || { note: "", tag: "" };
     const nextRetryAt = normalizeTsMs((r as any).next_retry_at);
 
@@ -486,6 +565,12 @@ export default function App() {
         setFrDebug(null);
       }
 
+      const rawResults: any[] = Array.isArray((data as any).results) ? (data as any).results : [];
+      const hasPendingRaw = rawResults.some((x) => {
+        const s = String(x?.state || "").toLowerCase();
+        return s === "queued" || s === "retry" || s === "processing";
+      });
+
       setRows((prev) => {
         const map = new Map<string, VatRow>();
 
@@ -495,7 +580,7 @@ export default function App() {
         }
 
         let seq = 0;
-        for (const raw of (data as any).results || []) {
+        for (const raw of rawResults) {
           const incoming = { ...(raw as any) } as VatRow;
           (incoming as any).next_retry_at = normalizeTsMs((incoming as any).next_retry_at);
 
@@ -516,7 +601,8 @@ export default function App() {
 
       setLastUpdate(new Date().toLocaleString("nl-NL"));
 
-      if ((data as any).job?.status === "completed") stopPolling();
+      // Stop niet als er nog pending rows zijn (ook als backend "completed" zegt)
+      if ((data as any).job?.status === "completed" && !hasPendingRaw) stopPolling();
     } catch (e: any) {
       if (e?.name === "AbortError") return;
       // ignore
@@ -608,7 +694,7 @@ export default function App() {
 
   function getCellText(r: VatRow, colIndex: number): string {
     const cols: Array<string> = [
-      displayState(r), // was: r.state ?? ""
+      displayState(r),
       (r as any).vat_number ?? "",
       (r as any).name ?? "",
       (r as any).address ?? "",
@@ -678,6 +764,7 @@ export default function App() {
       const n = normalizeVatCandidate(c);
       if (!n) continue;
 
+      // Import blijft permissief (filtert alleen obvious bad input)
       const fmt = validateFormat(n);
       if (!fmt.ok) continue;
 
@@ -1222,7 +1309,7 @@ export default function App() {
             <InputCountryBarChart inputEntries={inputEntries} maxInputCount={maxInputCount} />
           </div>
 
-          {/* RIGHT (Saved Runs panel removed, VIES card stretches) */}
+          {/* RIGHT */}
           <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 16, minHeight: 0 }}>
             <div className="card">
               <h2>Filter</h2>
@@ -1369,6 +1456,10 @@ export default function App() {
                   const nra = normalizeTsMs((r as any).next_retry_at);
                   const eta = ds === "retry" && nra && nra > Date.now() ? formatEta(nra) : "";
 
+                  // verberg stale retry-errors zodra row een echte outcome heeft
+                  const isDone = ds === "valid" || ds === "invalid";
+                  const errShown = isDone ? "" : humanError((r as any).error_code, (r as any).error);
+
                   return (
                     <React.Fragment key={`${key}-${idx}`}>
                       <tr onClick={() => setExpandedKey(isOpen ? null : key)} style={{ cursor: "pointer" }}>
@@ -1387,9 +1478,7 @@ export default function App() {
                         <td title={(r as any).name || ""}>{(r as any).name || ""}</td>
                         <td title={(r as any).address || ""}>{(r as any).address || ""}</td>
 
-                        <td title={humanError((r as any).error_code, (r as any).error) || ""}>
-                          {humanError((r as any).error_code, (r as any).error) || ""}
-                        </td>
+                        <td title={errShown || ""}>{errShown || ""}</td>
                       </tr>
 
                       {isOpen && (
@@ -1403,10 +1492,10 @@ export default function App() {
                               <b>{(r as any).checked_at ? new Date((r as any).checked_at).toLocaleString("nl-NL") : "—"}</b>
 
                               <span>Error code</span>
-                              <b>{(r as any).error_code || "—"}</b>
+                              <b>{isDone ? "—" : (r as any).error_code || "—"}</b>
 
                               <span>Details</span>
-                              <b>{(r as any).details || "—"}</b>
+                              <b>{isDone ? "—" : (r as any).details || "—"}</b>
 
                               <span>Attempt</span>
                               <b>{typeof (r as any).attempt === "number" ? String((r as any).attempt) : "—"}</b>
@@ -1427,7 +1516,9 @@ export default function App() {
                                   setNotes((prev) => ({ ...prev, [key2]: { note: (r as any).note || "", tag: nextTag } }));
                                   setRows((prev) =>
                                     prev.map((x) =>
-                                      `${(x as any).country_code || ""}:${(x as any).vat_part || ""}` === key2 ? { ...(x as any), tag: nextTag } : x
+                                      `${(x as any).country_code || ""}:${(x as any).vat_part || ""}` === key2
+                                        ? { ...(x as any), tag: nextTag }
+                                        : x
                                     )
                                   );
                                 }}
@@ -1446,7 +1537,9 @@ export default function App() {
                                   setNotes((prev) => ({ ...prev, [key2]: { note: nextNote, tag: ((r as any).tag as any) || "" } }));
                                   setRows((prev) =>
                                     prev.map((x) =>
-                                      `${(x as any).country_code || ""}:${(x as any).vat_part || ""}` === key2 ? { ...(x as any), note: nextNote } : x
+                                      `${(x as any).country_code || ""}:${(x as any).vat_part || ""}` === key2
+                                        ? { ...(x as any), note: nextNote }
+                                        : x
                                     )
                                   );
                                 }}
