@@ -64,6 +64,52 @@ function normalizeVatCandidate(v: string): string {
   return n;
 }
 
+type RowState = "valid" | "invalid" | "retry" | "queued" | "processing" | "error";
+
+function normalizeTsMs(ts: any): number | undefined {
+  const n = typeof ts === "number" ? ts : Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  // Heuristic: seconds timestamps are ~1e9..1e10; ms timestamps are ~1e12..1e13
+  if (n < 1_000_000_000_000) return n * 1000;
+  return n;
+}
+
+function rowKeyStable(r: Partial<VatRow>, fallbackIdx?: number): string {
+  const vat = String((r as any).vat_number || "").trim();
+  const input = String((r as any).input || "").trim();
+  const cc = String((r as any).country_code || "").trim();
+  const part = String((r as any).vat_part || "").trim();
+
+  if (vat) return `vat:${normalizeVatCandidate(vat)}`;
+  if (input) return `in:${normalizeVatCandidate(input)}`;
+  if (cc || part) return `cc:${cc}:${part}`;
+  return `idx:${fallbackIdx ?? 0}`;
+}
+
+function displayState(r: VatRow): RowState {
+  const raw = String((r as any).state || "").toLowerCase();
+
+  if (raw === "error") return "error";
+
+  const v = (r as any).valid;
+  if (typeof v === "boolean") return v ? "valid" : "invalid";
+
+  const hasResult = Boolean(String((r as any).name || "").trim() || String((r as any).address || "").trim());
+  if (raw === "retry" && hasResult) {
+    // UI-fix: als er al een resultaat zichtbaar is maar state blijft retry, toon geen retry meer
+    return "valid";
+  }
+
+  const nra = normalizeTsMs((r as any).next_retry_at);
+  if (raw === "retry" && (!nra || nra <= Date.now())) {
+    // voorkom "retry (ETA 0s)" bij missing/past/seconds timestamps
+    return "queued";
+  }
+
+  if (raw === "valid" || raw === "invalid" || raw === "retry" || raw === "queued" || raw === "processing") return raw as RowState;
+  return "queued";
+}
+
 function stateClass(state?: string): string {
   const s = String(state || "").toLowerCase();
   if (["valid", "invalid", "retry", "queued", "processing", "error"].includes(s)) return s;
@@ -303,19 +349,19 @@ export default function App() {
     // Als je handmatig sorteert via kolom-klik: laat die sortering leidend zijn
     if (sortState.colIndex !== null) return base;
 
-    const prio = (state?: string) => {
-      const s = String(state || "").toLowerCase();
+    const prio = (r: VatRow) => {
+      const s = displayState(r);
       if (s === "queued" || s === "retry" || s === "processing") return 0;
       return 1;
     };
 
     return [...base].sort((a, b) => {
-      const pa = prio(a.state);
-      const pb = prio(b.state);
+      const pa = prio(a);
+      const pb = prio(b);
       if (pa !== pb) return pa - pb;
 
-      const na = typeof a.next_retry_at === "number" ? a.next_retry_at : Number.POSITIVE_INFINITY;
-      const nb = typeof b.next_retry_at === "number" ? b.next_retry_at : Number.POSITIVE_INFINITY;
+      const na = normalizeTsMs((a as any).next_retry_at) ?? Number.POSITIVE_INFINITY;
+      const nb = normalizeTsMs((b as any).next_retry_at) ?? Number.POSITIVE_INFINITY;
       if (na !== nb) return na - nb;
 
       return 0;
@@ -331,7 +377,7 @@ export default function App() {
       err = 0;
 
     for (const r of rows) {
-      const st = String(r.state || "").toLowerCase();
+      const st = displayState(r);
       if (st === "valid") {
         done++;
         vOk++;
@@ -405,17 +451,20 @@ export default function App() {
   }
 
   function enrichRow(r: VatRow): VatRow {
-    const key = `${r.country_code || ""}:${r.vat_part || ""}`;
-    const fmt = validateFormat(r.vat_number || r.input || "");
+    const key = `${(r as any).country_code || ""}:${(r as any).vat_part || ""}`;
+    const fmt = validateFormat((r as any).vat_number || (r as any).input || "");
     const user = notes[key] || { note: "", tag: "" };
+    const nextRetryAt = normalizeTsMs((r as any).next_retry_at);
+
     return {
       ...r,
+      next_retry_at: nextRetryAt,
       format_ok: fmt.ok,
       format_reason: fmt.reason,
       note: user.note,
       tag: user.tag,
-      case_ref: r.case_ref || caseRef,
-    };
+      case_ref: (r as any).case_ref || caseRef,
+    } as any;
   }
 
   async function pollFrJob(jobId: string) {
@@ -429,7 +478,7 @@ export default function App() {
       if (!resp.ok) return;
       const data = (await resp.json()) as any as FrJobResponse;
 
-      setFrText(`${data.job.done}/${data.job.total} (${data.job.status})`);
+      setFrText(`${(data as any).job.done}/${(data as any).job.total} (${(data as any).job.status})`);
 
       if (frDebugOnRef.current) {
         setFrDebug((data as any).debug ?? (data as any).worker ?? null);
@@ -439,14 +488,26 @@ export default function App() {
 
       setRows((prev) => {
         const map = new Map<string, VatRow>();
-        for (const r of prev) {
-          const k = `${r.country_code || ""}:${r.vat_part || ""}` || r.vat_number || r.input || crypto.randomUUID();
-          map.set(k, r);
+
+        for (let i = 0; i < prev.length; i++) {
+          const r = prev[i];
+          map.set(rowKeyStable(r, i), r);
         }
 
-        for (const r of (data as any).results || []) {
-          const k = `${(r as any).country_code || ""}:${(r as any).vat_part || ""}` || (r as any).vat_number || (r as any).input || crypto.randomUUID();
-          const merged = { ...map.get(k), ...(r as any) };
+        let seq = 0;
+        for (const raw of (data as any).results || []) {
+          const incoming = { ...(raw as any) } as VatRow;
+          (incoming as any).next_retry_at = normalizeTsMs((incoming as any).next_retry_at);
+
+          const k = rowKeyStable(incoming, 100000 + seq++);
+          const existing = map.get(k);
+
+          const merged: any = { ...(existing || {}), ...(incoming as any) };
+
+          // Als server geen state meestuurt (of leeg), behoud de lokale state
+          const st = (incoming as any).state;
+          if (st === undefined || st === null || st === "") merged.state = (existing as any)?.state;
+
           map.set(k, enrichRow(merged));
         }
 
@@ -497,7 +558,7 @@ export default function App() {
       setDuplicatesIgnored(data.duplicates_ignored || 0);
       setViesStatus(Array.isArray(data.vies_status) ? data.vies_status : []);
 
-      const enriched = (data.results || []).map((r: VatRow) => enrichRow({ ...r, case_ref: caseRef }));
+      const enriched = (data.results || []).map((r: VatRow) => enrichRow({ ...(r as any), case_ref: caseRef } as any));
       setRows(enriched);
 
       setLastUpdate(new Date().toLocaleString("nl-NL"));
@@ -546,7 +607,13 @@ export default function App() {
   }
 
   function getCellText(r: VatRow, colIndex: number): string {
-    const cols: Array<string> = [r.state ?? "", r.vat_number ?? "", r.name ?? "", r.address ?? "", r.error_code ?? r.error ?? ""];
+    const cols: Array<string> = [
+      displayState(r), // was: r.state ?? ""
+      (r as any).vat_number ?? "",
+      (r as any).name ?? "",
+      (r as any).address ?? "",
+      (r as any).error_code ?? (r as any).error ?? "",
+    ];
     return cols[colIndex] ?? "";
   }
 
@@ -1292,11 +1359,15 @@ export default function App() {
 
               <tbody>
                 {filteredRows.map((r, idx) => {
-                  const st = stateLabel(r.state);
-                  const cls = stateClass(r.state);
-                  const key = `${r.country_code || ""}:${r.vat_part || ""}` || `${r.vat_number || r.input || idx}`;
+                  const ds = displayState(r);
+                  const st = stateLabel(ds);
+                  const cls = stateClass(ds);
+
+                  const key = rowKeyStable(r, idx);
                   const isOpen = expandedKey === key;
-                  const eta = r.next_retry_at ? formatEta(r.next_retry_at) : "";
+
+                  const nra = normalizeTsMs((r as any).next_retry_at);
+                  const eta = ds === "retry" && nra && nra > Date.now() ? formatEta(nra) : "";
 
                   return (
                     <React.Fragment key={`${key}-${idx}`}>
@@ -1309,14 +1380,16 @@ export default function App() {
                           </span>
                         </td>
 
-                        <td className="mono nowrap" title={r.vat_number || r.input || ""}>
-                          {r.vat_number || r.input || ""}
+                        <td className="mono nowrap" title={(r as any).vat_number || (r as any).input || ""}>
+                          {(r as any).vat_number || (r as any).input || ""}
                         </td>
 
-                        <td title={r.name || ""}>{r.name || ""}</td>
-                        <td title={r.address || ""}>{r.address || ""}</td>
+                        <td title={(r as any).name || ""}>{(r as any).name || ""}</td>
+                        <td title={(r as any).address || ""}>{(r as any).address || ""}</td>
 
-                        <td title={humanError(r.error_code, r.error) || ""}>{humanError(r.error_code, r.error) || ""}</td>
+                        <td title={humanError((r as any).error_code, (r as any).error) || ""}>
+                          {humanError((r as any).error_code, (r as any).error) || ""}
+                        </td>
                       </tr>
 
                       {isOpen && (
@@ -1324,36 +1397,38 @@ export default function App() {
                           <td colSpan={5} className="rowDetails">
                             <div className="kv">
                               <span>Case</span>
-                              <b>{r.case_ref || "—"}</b>
+                              <b>{(r as any).case_ref || "—"}</b>
 
                               <span>Checked at</span>
-                              <b>{r.checked_at ? new Date(r.checked_at).toLocaleString("nl-NL") : "—"}</b>
+                              <b>{(r as any).checked_at ? new Date((r as any).checked_at).toLocaleString("nl-NL") : "—"}</b>
 
                               <span>Error code</span>
-                              <b>{r.error_code || "—"}</b>
+                              <b>{(r as any).error_code || "—"}</b>
 
                               <span>Details</span>
-                              <b>{r.details || "—"}</b>
+                              <b>{(r as any).details || "—"}</b>
 
                               <span>Attempt</span>
-                              <b>{typeof r.attempt === "number" ? String(r.attempt) : "—"}</b>
+                              <b>{typeof (r as any).attempt === "number" ? String((r as any).attempt) : "—"}</b>
 
                               <span>Next retry</span>
-                              <b>{r.next_retry_at ? new Date(r.next_retry_at).toLocaleString("nl-NL") : "—"}</b>
+                              <b>{nra ? new Date(nra).toLocaleString("nl-NL") : "—"}</b>
 
                               <span>Format</span>
-                              <b>{r.format_ok === false ? `Bad (${r.format_reason})` : "OK"}</b>
+                              <b>{(r as any).format_ok === false ? `Bad (${(r as any).format_reason})` : "OK"}</b>
                             </div>
 
                             <div className="row" style={{ marginTop: 10 }}>
                               <select
-                                value={r.tag || ""}
+                                value={(r as any).tag || ""}
                                 onChange={(e) => {
-                                  const key2 = `${r.country_code || ""}:${r.vat_part || ""}`;
+                                  const key2 = `${(r as any).country_code || ""}:${(r as any).vat_part || ""}`;
                                   const nextTag = e.target.value as any;
-                                  setNotes((prev) => ({ ...prev, [key2]: { note: r.note || "", tag: nextTag } }));
+                                  setNotes((prev) => ({ ...prev, [key2]: { note: (r as any).note || "", tag: nextTag } }));
                                   setRows((prev) =>
-                                    prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, tag: nextTag } : x))
+                                    prev.map((x) =>
+                                      `${(x as any).country_code || ""}:${(x as any).vat_part || ""}` === key2 ? { ...(x as any), tag: nextTag } : x
+                                    )
                                   );
                                 }}
                               >
@@ -1364,13 +1439,15 @@ export default function App() {
 
                               <input
                                 type="text"
-                                value={r.note || ""}
+                                value={(r as any).note || ""}
                                 onChange={(e) => {
-                                  const key2 = `${r.country_code || ""}:${r.vat_part || ""}`;
+                                  const key2 = `${(r as any).country_code || ""}:${(r as any).vat_part || ""}`;
                                   const nextNote = e.target.value;
-                                  setNotes((prev) => ({ ...prev, [key2]: { note: nextNote, tag: (r.tag as any) || "" } }));
+                                  setNotes((prev) => ({ ...prev, [key2]: { note: nextNote, tag: ((r as any).tag as any) || "" } }));
                                   setRows((prev) =>
-                                    prev.map((x) => (`${x.country_code || ""}:${x.vat_part || ""}` === key2 ? { ...x, note: nextNote } : x))
+                                    prev.map((x) =>
+                                      `${(x as any).country_code || ""}:${(x as any).vat_part || ""}` === key2 ? { ...(x as any), note: nextNote } : x
+                                    )
                                   );
                                 }}
                                 placeholder="Note (optioneel)"
