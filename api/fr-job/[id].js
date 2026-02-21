@@ -6,12 +6,15 @@ const VIES_TIMEOUT_MS = Number(process.env.VIES_TIMEOUT_MS || 20000);
 const JOB_TTL_SEC = 6 * 60 * 60;
 
 // Retries
-const MAX_RETRIES = Number(process.env.MAX_RETRIES || 55); // interpreted as max TOTAL attempts
+const MAX_RETRIES = Number(process.env.MAX_RETRIES || 55); // max TOTAL attempts
 const FIXED_RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 0); // 0 = exponential backoff
 const WORKER_LOCK_SEC = Number(process.env.WORKER_LOCK_SEC || 8);
 
-// Pending scan
+// Pending scan + lease
 const PENDING_SCAN_LIMIT = Number(process.env.PENDING_SCAN_LIMIT || 200);
+const PENDING_LEASE_MS = Number(
+  process.env.PENDING_LEASE_MS || Math.max(30_000, VIES_TIMEOUT_MS + 5_000)
+);
 
 const RETRYABLE_CODES = new Set([
   "SERVICE_UNAVAILABLE",
@@ -49,7 +52,6 @@ function parseVatKey(key) {
   const s = String(key || "");
   const parts = s.split(":");
   if (parts.length === 2) return { cc: parts[0], vat: parts[1] || "" };
-  // fallback if some other separator was used
   const cc = s.slice(0, 2);
   const vat = s.slice(2);
   return { cc, vat };
@@ -82,9 +84,19 @@ function isFinalState(state) {
 }
 
 function pendingField(task) {
-  // Avoid collisions across jobs; still compatible with old fields.
-  // Field name is only used inside queue:pending hash.
+  // canonical: avoids collisions across jobs
   return `${task.jobId}|${task.key}`;
+}
+
+async function hdelFields(hashKey, fields) {
+  for (const f of fields) {
+    if (!f) continue;
+    try {
+      await kv.hdel(hashKey, f);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function fetchJson(url, init, timeoutMs = VIES_TIMEOUT_MS) {
@@ -214,9 +226,7 @@ async function releaseWorkerLock() {
 async function getMeta(metaKey) {
   const meta = await kv.get(metaKey);
   if (!meta) return null;
-  if (typeof meta === "string") {
-    return safeJsonParse(meta);
-  }
+  if (typeof meta === "string") return safeJsonParse(meta);
   return meta;
 }
 
@@ -248,7 +258,11 @@ function buildBaseRow(cur, task) {
   };
 }
 
-async function popDuePendingTask(nowMs, debugEnabled, debugObj) {
+/**
+ * Lease a due pending task instead of deleting it.
+ * If the function crashes mid-run, the lease expires and the task becomes claimable again.
+ */
+async function claimDuePendingTask(nowMs, workerId, debugEnabled, debugObj) {
   const fields = await kv.hkeys("queue:pending");
   if (!fields || fields.length === 0) return null;
 
@@ -269,15 +283,34 @@ async function popDuePendingTask(nowMs, debugEnabled, debugObj) {
     }
 
     const dueAt = Number(task.nextRunAt || 0);
+    const leaseUntil = Number(task.leaseUntil || 0);
+
+    // already leased
+    if (leaseUntil && leaseUntil > nowMs) continue;
+
+    // due now?
     if (!dueAt || dueAt <= nowMs) {
-      await kv.hdel("queue:pending", field);
-      logIf(debugEnabled, `[worker] pop pending due`, maskKey(task.key));
-      return task;
+      const leased = {
+        ...task,
+        leaseOwner: workerId,
+        leaseAt: nowMs,
+        leaseUntil: nowMs + PENDING_LEASE_MS,
+      };
+
+      await kv.hset("queue:pending", { [field]: JSON.stringify(leased) });
+      await kv.expire("queue:pending", JOB_TTL_SEC);
+
+      leased._pendingField = field;
+      logIf(debugEnabled, `[worker] lease pending`, { field, key: maskKey(task.key) });
+      return leased;
     }
   }
 
-  // Nothing due in scan window
   return null;
+}
+
+function makeWorkerId(source) {
+  return `${source}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
 }
 
 // Exported so Cron endpoint can reuse it.
@@ -285,20 +318,20 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
   const locked = await acquireWorkerLock();
   if (!locked) {
     logIf(debugEnabled, `[worker:${source}] lock busy -> skip`);
-    return { processed: 0, locked: false, skippedFinal: 0, requeuedFuture: 0 };
+    return { processed: 0, locked: false, pending_scanned: 0 };
   }
 
+  const workerId = makeWorkerId(source);
   const start = Date.now();
   let processed = 0;
-  let skippedFinal = 0;
-  let requeuedFuture = 0;
+  let pending_scanned = 0;
 
   const requester = {
     ms: (process.env.REQUESTER_MS || "").toUpperCase(),
     vat: process.env.REQUESTER_VAT || "",
   };
 
-  const debugObj = debugEnabled ? { pending_scanned: 0 } : null;
+  const debugObj = debugEnabled ? { pending_scanned: 0, workerId } : null;
 
   try {
     while (processed < maxTasks && Date.now() - start < maxMs) {
@@ -306,22 +339,36 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
       let raw = await kv.rpop("queue:vies");
       let task = raw ? safeJsonParse(raw) : null;
 
-      // 2) fallback pending hash (due-only)
+      // 2) pending hash (lease-based)
       if (!task) {
-        task = await popDuePendingTask(Date.now(), debugEnabled, debugObj);
+        task = await claimDuePendingTask(Date.now(), workerId, debugEnabled, debugObj);
       }
 
       if (!task) break;
       if (!task?.jobId || !task?.key || !task?.p) continue;
 
+      pending_scanned = debugObj?.pending_scanned ?? pending_scanned;
+
       const now = Date.now();
 
-      // If task is scheduled in the future (should normally live in pending), move it and continue.
+      // if scheduled in the future, ensure it lives in pending and continue
       if (task.nextRunAt && Number(task.nextRunAt) > now) {
-        await kv.hset("queue:pending", { [pendingField(task)]: JSON.stringify(task) });
+        const canonical = pendingField(task);
+        const cleaned = {
+          ...task,
+          leaseOwner: "",
+          leaseAt: 0,
+          leaseUntil: 0,
+        };
+        delete cleaned._pendingField;
+
+        await kv.hset("queue:pending", { [canonical]: JSON.stringify(cleaned) });
         await kv.expire("queue:pending", JOB_TTL_SEC);
-        requeuedFuture++;
-        processed++; // we consumed an item from the list
+
+        // remove legacy field if present and different
+        await hdelFields("queue:pending", [task._pendingField, task.key].filter((f) => f && f !== canonical));
+
+        processed++;
         continue;
       }
 
@@ -330,6 +377,8 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
 
       const meta = await getMeta(metaKey);
       if (!meta) {
+        // cleanup pending slot to avoid infinite garbage
+        await hdelFields("queue:pending", [task._pendingField, pendingField(task)].filter(Boolean));
         processed++;
         continue;
       }
@@ -342,7 +391,7 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
         cur = null;
       }
 
-      // Idempotency + meta self-heal: if already final, do not run VIES again.
+      // If already final: count once + delete pending entries
       if (cur && isFinalState(cur.state)) {
         if (!cur.done_counted) {
           cur.done_counted = true;
@@ -353,24 +402,29 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
           meta.status = Number(meta.done || 0) >= Number(meta.total || 0) ? "completed" : "running";
           await setMeta(metaKey, meta);
         }
-        skippedFinal++;
+
+        // drop pending entries for this row (canonical + legacy + claimed field)
+        await hdelFields("queue:pending", [
+          task._pendingField,
+          pendingField(task),
+          task.key, // legacy validate-batch field
+        ]);
+
         processed++;
         continue;
       }
 
-      // Attempt semantics:
-      // task.attempt = number of attempts already performed (after last write).
-      // currentAttempt = this attempt number (1..)
-      const currentAttempt = Math.max(1, Number(task.attempt || 0) + 1);
+      // attempt = max(previous task attempt, previous row attempt) + 1
+      const prevAttempt = Math.max(Number(task.attempt || 0), Number(cur?.attempt || 0));
+      const currentAttempt = Math.max(1, prevAttempt + 1);
 
-      // Mark row as processing (and clear next_retry_at; avoid "processing stuck with old ETA")
+      // mark processing
       const processingRow = {
         ...buildBaseRow(cur, task),
         state: "processing",
         attempt: currentAttempt,
         next_retry_at: null,
         checked_at: now,
-        // keep last error fields visible while processing? (optional)
         error_code: cur?.error_code || "",
         error: cur?.error || "",
         details: cur?.details || "",
@@ -380,6 +434,7 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
       await ensureKeyTTL(resKey);
 
       logIf(debugEnabled, `[worker:${source}] run`, {
+        workerId,
         jobId: task.jobId,
         key: maskKey(task.key),
         attempt: currentAttempt,
@@ -387,6 +442,7 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
 
       const r = await viesCheck(task.p, requester);
 
+      // SUCCESS
       if (r.ok) {
         const d = r.data || {};
         const valid = !!d.valid;
@@ -409,14 +465,12 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
         await kv.hset(resKey, { [task.key]: JSON.stringify(row) });
         await ensureKeyTTL(resKey);
 
-        // meta.done increments only once per row (via done_counted)
-        const prevCounted = !!(cur && cur.done_counted);
-        if (!prevCounted) meta.done = Number(meta.done || 0) + 1;
-
+        if (!cur?.done_counted) meta.done = Number(meta.done || 0) + 1;
         meta.status = Number(meta.done || 0) >= Number(meta.total || 0) ? "completed" : "running";
         await setMeta(metaKey, meta);
 
-        logIf(debugEnabled, `[worker:${source}] done`, { key: maskKey(task.key), state: row.state, attempt: currentAttempt });
+        // remove pending entries (canonical + legacy + claimed)
+        await hdelFields("queue:pending", [task._pendingField, pendingField(task), task.key]);
 
         processed++;
         continue;
@@ -425,13 +479,15 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
       const code = String(r.errorCode || `HTTP_${r.status || 0}`).trim();
       const details = String(r.message || JSON.stringify(r.data || {})).slice(0, 1000);
 
+      // RETRYABLE
       if (isRetryable(code, r.status)) {
-        // Exhausted?
         if (currentAttempt >= MAX_RETRIES) {
           const row = {
             ...buildBaseRow(cur, task),
             state: "error",
             valid: null,
+            name: "",
+            address: "",
             error_code: "RETRY_EXHAUSTED",
             error: "RETRY_EXHAUSTED",
             details,
@@ -444,13 +500,11 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
           await kv.hset(resKey, { [task.key]: JSON.stringify(row) });
           await ensureKeyTTL(resKey);
 
-          const prevCounted = !!(cur && cur.done_counted);
-          if (!prevCounted) meta.done = Number(meta.done || 0) + 1;
-
+          if (!cur?.done_counted) meta.done = Number(meta.done || 0) + 1;
           meta.status = Number(meta.done || 0) >= Number(meta.total || 0) ? "completed" : "running";
           await setMeta(metaKey, meta);
 
-          logIf(debugEnabled, `[worker:${source}] exhausted`, { key: maskKey(task.key), code, attempt: currentAttempt });
+          await hdelFields("queue:pending", [task._pendingField, pendingField(task), task.key]);
 
           processed++;
           continue;
@@ -458,7 +512,6 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
 
         const nextRetryAt = Date.now() + nextDelayMs(currentAttempt);
 
-        // IMPORTANT: clear name/address on retry to avoid "looks like a result but state=retry"
         const row = {
           ...buildBaseRow(cur, task),
           state: "retry",
@@ -479,28 +532,40 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
         meta.status = "running";
         await setMeta(metaKey, meta);
 
-        // Requeue task into pending (collision-safe)
-        task.attempt = currentAttempt; // attempts performed so far
-        task.nextRunAt = nextRetryAt;
-        await kv.hset("queue:pending", { [pendingField(task)]: JSON.stringify(task) });
+        // update pending (canonical), clear lease
+        const canonical = pendingField(task);
+        const retryTask = {
+          jobId: task.jobId,
+          key: task.key,
+          p: task.p,
+          case_ref: task.case_ref,
+          attempt: currentAttempt,
+          nextRunAt: nextRetryAt,
+          leaseOwner: "",
+          leaseAt: 0,
+          leaseUntil: 0,
+        };
+
+        await kv.hset("queue:pending", { [canonical]: JSON.stringify(retryTask) });
         await kv.expire("queue:pending", JOB_TTL_SEC);
 
-        logIf(debugEnabled, `[worker:${source}] retry`, {
-          key: maskKey(task.key),
-          code,
-          attempt: currentAttempt,
-          next: new Date(nextRetryAt).toISOString(),
-        });
+        // delete claimed/legacy fields if different (migration + cleanup)
+        await hdelFields(
+          "queue:pending",
+          [task._pendingField, task.key].filter((f) => f && f !== canonical)
+        );
 
         processed++;
         continue;
       }
 
-      // Non-retryable error -> final
+      // NON-RETRYABLE -> FINAL ERROR
       const row = {
         ...buildBaseRow(cur, task),
         state: "error",
         valid: null,
+        name: "",
+        address: "",
         error_code: code,
         error: code,
         details,
@@ -513,18 +578,16 @@ export async function runWorkerSlice({ maxTasks = 4, maxMs = 2500, debugEnabled 
       await kv.hset(resKey, { [task.key]: JSON.stringify(row) });
       await ensureKeyTTL(resKey);
 
-      const prevCounted = !!(cur && cur.done_counted);
-      if (!prevCounted) meta.done = Number(meta.done || 0) + 1;
-
+      if (!cur?.done_counted) meta.done = Number(meta.done || 0) + 1;
       meta.status = Number(meta.done || 0) >= Number(meta.total || 0) ? "completed" : "running";
       await setMeta(metaKey, meta);
 
-      logIf(debugEnabled, `[worker:${source}] error`, { key: maskKey(task.key), code, attempt: currentAttempt });
+      await hdelFields("queue:pending", [task._pendingField, pendingField(task), task.key]);
 
       processed++;
     }
 
-    return { processed, locked: true, skippedFinal, requeuedFuture, ...(debugObj ? { debug: debugObj } : {}) };
+    return { processed, locked: true, ...(debugObj ? { debug: debugObj } : {}) };
   } finally {
     await releaseWorkerLock();
   }
@@ -539,11 +602,10 @@ export default async function handler(req, res) {
   const debug = {
     processed: 0,
     locked: null,
-    skippedFinal: 0,
-    requeuedFuture: 0,
     queue_vies_len: null,
     queue_pending_len: null,
     pending_scanned: null,
+    workerId: null,
     error: null,
   };
 
@@ -551,9 +613,8 @@ export default async function handler(req, res) {
     const slice = await runWorkerSlice({ maxTasks: 4, maxMs: 2500, debugEnabled: wantDebug, source: "poll" });
     debug.processed = slice.processed;
     debug.locked = slice.locked;
-    debug.skippedFinal = slice.skippedFinal || 0;
-    debug.requeuedFuture = slice.requeuedFuture || 0;
     debug.pending_scanned = slice?.debug?.pending_scanned ?? null;
+    debug.workerId = slice?.debug?.workerId ?? null;
 
     try {
       debug.queue_vies_len = await kv.llen("queue:vies");
@@ -573,7 +634,6 @@ export default async function handler(req, res) {
     const job = await getMeta(metaKey);
     if (!job) return res.status(404).json({ error: "Not found", ...(wantDebug ? { debug } : {}) });
 
-    // If job was created as queued, flip to running once polling starts
     if (job.status === "queued" && Number(job.total || 0) > 0) {
       job.status = "running";
       await setMeta(metaKey, job);
