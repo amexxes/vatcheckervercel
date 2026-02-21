@@ -340,12 +340,16 @@ export default async function handler(req, res) {
           attempt: 0,
           nextRunAt: Date.now(),
           case_ref,
+          // lease fields (optional; fr-job claim code werkt ook zonder)
+          leaseOwner: "",
+          leaseAt: 0,
+          leaseUntil: 0,
         };
 
         // list queue
         await kv.lpush("queue:vies", JSON.stringify(task));
 
-        // pending queue (collision-safe)
+        // pending queue (collision-safe): jobId|country:vat
         await kv.hset("queue:pending", { [pendingField(fr_job_id, q.key)]: JSON.stringify(task) });
       }
 
