@@ -916,44 +916,97 @@ export default function App() {
     pres.writeFile({ fileName: `vat_infographic_${stamp}.pptx` });
   }
 
-  function exportExcel() {
-    const headers = [
-      "case_ref",
-      "input",
-      "vat_number",
-      "country_code",
-      "valid",
-      "state",
-      "name",
-      "address",
-      "error_code",
-      "error",
-      "attempt",
-      "next_retry_at",
-      "note",
-      "tag",
-      "checked_at",
-    ];
+function exportExcel() {
+  const headers = [
+    "case_ref",
+    "input",
+    "vat_number",
+    "country_code",
+    "valid",
+    "state",
+    "name",
+    "address",
+    "error_code",
+    "error",
+    "attempt",
+    "next_retry_at",
+    "note",
+    "tag",
+    "checked_at",
+    "timestamp",
+  ];
 
-    const aoa: string[][] = [
-      headers,
-      ...rows.map((r) =>
-        headers.map((h) => {
-          const v = (r as any)[h];
-          return v === null || v === undefined ? "" : String(v);
-        })
-      ),
-    ];
+  const dateFields = new Set(["checked_at", "next_retry_at", "timestamp"]);
 
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }));
+  const toExcelDate = (value: any): Date | "" => {
+    if (value === null || value === undefined || value === "") return "";
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Results");
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      const d = new Date(value);
+      d.setMilliseconds(0);
+      return d;
+    }
 
-    const filename = `vat_results_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`;
-    XLSX.writeFile(wb, filename);
+    if (typeof value === "string" && !/^\d+$/.test(value.trim())) {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) {
+        d.setMilliseconds(0);
+        return d;
+      }
+      return "";
+    }
+
+    let n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return "";
+
+    // seconds -> ms
+    if (n < 1_000_000_000_000) {
+      n = n * 1000;
+    }
+    // microseconds -> ms
+    else if (n > 10_000_000_000_000) {
+      n = Math.floor(n / 1000);
+    }
+
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return "";
+    d.setMilliseconds(0);
+    return d;
+  };
+
+  const aoa = [
+    headers,
+    ...rows.map((r) =>
+      headers.map((h) => {
+        const v = (r as any)[h];
+        if (dateFields.has(h)) return toExcelDate(v);
+        return v === null || v === undefined ? "" : String(v);
+      })
+    ),
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
+
+  for (let rowIdx = 1; rowIdx < aoa.length; rowIdx++) {
+    for (const h of dateFields) {
+      const colIdx = headers.indexOf(h);
+      if (colIdx === -1) continue;
+
+      const addr = XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
+      if (ws[addr]) {
+        ws[addr].z = "yyyy-mm-dd hh:mm:ss";
+      }
+    }
   }
+
+  ws["!cols"] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Results");
+
+  const filename = `vat_results_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
 
   function saveRun() {
     const id = crypto.randomUUID();
