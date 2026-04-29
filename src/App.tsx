@@ -41,12 +41,12 @@ const COUNTRY_COORDS: Record<string, { lat: number; lon: number }> = {
 };
 
 const ERROR_MAP: Record<string, string> = {
-  MS_MAX_CONCURRENT_REQ: "Member State heeft te veel gelijktijdige checks; we proberen later opnieuw.",
-  MS_UNAVAILABLE: "Member State is tijdelijk niet beschikbaar; we proberen later opnieuw.",
-  TIMEOUT: "Timeout richting VIES; we proberen later opnieuw.",
-  GLOBAL_MAX_CONCURRENT_REQ: "VIES is druk; we proberen later opnieuw.",
-  SERVICE_UNAVAILABLE: "VIES service unavailable; we proberen later opnieuw.",
-  NETWORK_ERROR: "Netwerkfout richting VIES; we proberen later opnieuw.",
+  MS_MAX_CONCURRENT_REQ: "Member State has too many concurrent checks; we will try again later.",
+  MS_UNAVAILABLE: "Member State is temporarily unavailable; we will try again later.",
+  TIMEOUT: "Timeout when calling VIES; we will try again later.",
+  GLOBAL_MAX_CONCURRENT_REQ: "VIES is busy; we will try again later.",
+  SERVICE_UNAVAILABLE: "VIES service is unavailable; we will try again later.",
+  NETWORK_ERROR: "Network error when calling VIES; we will try again later.",
 };
 
 function normalizeLine(s: string): string {
@@ -277,9 +277,9 @@ function InputCountryBarChart({
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-        <div style={{ fontSize: 12, color: "var(--muted)" }}>Input per land</div>
+        <div style={{ fontSize: 12, color: "var(--muted)" }}>Input by country</div>
         <div className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
-          {total} totaal
+          {total} total
         </div>
       </div>
 
@@ -1174,7 +1174,7 @@ export default function App() {
                 type="text"
                 value={caseRef}
                 onChange={(e) => setCaseRef(e.target.value)}
-                placeholder="Client / Case (optioneel)"
+                placeholder="Client / Case (optional)"
                 style={{ flex: 1, minWidth: 220 }}
               />
 
@@ -1212,7 +1212,7 @@ export default function App() {
                 />
                 <b>FR debug</b>
               </label>
-              {!activeFrJobId && <span style={{ color: "var(--muted)", fontSize: 12 }}>start een FR job om debug te zien</span>}
+              {!activeFrJobId && <span style={{ color: "var(--muted)", fontSize: 12 }}>start an FR job to see debug info</span>}
             </div>
 
             {frDebugOn && frDebug && (
@@ -1228,7 +1228,7 @@ export default function App() {
 
             {duplicatesIgnored > 0 && (
               <div className="callout" style={{ marginTop: 10 }}>
-                <b>{duplicatesIgnored}</b> duplicaten genegeerd.
+                <b>{duplicatesIgnored}</b> duplicates ignored.
               </div>
             )}
 
@@ -1239,11 +1239,11 @@ export default function App() {
             />
 
             <div className="callout" style={{ marginTop: 10 }}>
-              <b>Voorcontrole</b>: {precheck.unique} uniek / {precheck.totalLines} regels · {precheck.duplicates} duplicaten ·{" "}
+              <b>Pre-check</b>: {precheck.unique} unique / {precheck.totalLines} lines · {precheck.duplicates} duplicates ·{" "}
               {precheck.badFormat} format issues
               {precheck.badExamples.length > 0 && (
                 <details style={{ marginTop: 8 }}>
-                  <summary>Voorbeelden</summary>
+                  <summary>Examples</summary>
                   <div className="mono" style={{ fontSize: 12, whiteSpace: "pre-wrap", marginTop: 6 }}>
                     {precheck.badExamples.join("\n")}
                   </div>
@@ -1345,8 +1345,8 @@ export default function App() {
             </div>
 
             <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-              <h2>VIES status per land</h2>
-              <p className="hint">Beschikbaarheid volgens VIES check-status.</p>
+              <h2>VIES status by country</h2>
+              <p className="hint">Availability according to VIES check status.</p>
 
               <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                 {!viesStatus.length ? (
@@ -1544,7 +1544,7 @@ export default function App() {
                                     )
                                   );
                                 }}
-                                placeholder="Note (optioneel)"
+                                placeholder="Note (optional)"
                                 style={{ flex: 1, minWidth: 260 }}
                               />
                             </div>
